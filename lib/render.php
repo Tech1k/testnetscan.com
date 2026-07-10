@@ -191,7 +191,6 @@ function ts_head(array $net, array $opt = []): void
       <?php if ($isUtxo): ?><a href="<?= h($base) ?>/node"><?= ts_icon('hard-drive') ?>Node</a><?php endif; ?>
       <?php if (ts_mweb_enabled($net)): ?><a href="<?= h($base) ?>/mweb"><?= ts_icon('mweb') ?>MWEB</a><?php endif; ?>
       <a href="<?= h($base) ?>/tools"><?= ts_icon('tool') ?>Tools</a>
-      <?php if ($isUtxo): ?><a href="/docs"><?= ts_icon('code') ?>API</a><?php endif; ?>
       <a href="/donate"><?= ts_icon('heart') ?>Donate</a>
       <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle light / dark theme" title="Toggle theme"><?= ts_icon('sun', 'ico ico-sun') ?><?= ts_icon('moon', 'ico ico-moon') ?></button>
     </div>
@@ -214,6 +213,7 @@ function ts_footer(): void
     <a class="ext" href="https://cyphertoshi.com" target="_blank" rel="noopener">Guides</a>
     <a href="/donate">Donate</a>
     <a href="/status">Status</a>
+    <a href="/docs">API</a>
     <a class="ext" href="https://github.com/Tech1k/testnetscan.com" target="_blank" rel="noopener">Source</a>
     <a class="ext" href="https://github.com/Tech1k/testnetscan.com/blob/HEAD/LICENSE" target="_blank" rel="noopener">AGPL-3.0</a>
     <span class="faint">·</span>
