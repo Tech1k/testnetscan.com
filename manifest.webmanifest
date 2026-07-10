@@ -1,0 +1,16 @@
+{
+  "name": "TestnetScan",
+  "short_name": "TestnetScan",
+  "description": "Block explorer for Bitcoin testnet4, Litecoin testnet (with MWEB) and Monero testnet/stagenet — blocks, transactions, addresses, mempool and mining.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#14161b",
+  "theme_color": "#5271ff",
+  "lang": "en",
+  "categories": ["utilities", "developer"],
+  "icons": [
+    { "src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/assets/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

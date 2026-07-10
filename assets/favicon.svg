@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#5271ff"/>
+  <!-- magnifier lens examining a block -->
+  <circle cx="27" cy="27" r="13" fill="none" stroke="#ffffff" stroke-width="5"/>
+  <!-- small block inside the lens -->
+  <rect x="21" y="21" width="12" height="12" rx="2.5" fill="#ffffff"/>
+  <!-- handle -->
+  <line x1="37" y1="37" x2="50" y2="50" stroke="#ffffff" stroke-width="7" stroke-linecap="round"/>
+</svg>
