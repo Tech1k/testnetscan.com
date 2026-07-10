@@ -553,12 +553,14 @@ function ts_tx_hex(array $net, string $txid, ?string $blockhash = null): ?string
  * not resolvable without an outpoint index, so it is omitted (not null), a
  * documented limitation of the Electrum-backed lanes.
  */
-function ts_tx_outspends(array $net, array $tx): array
+function ts_tx_outspends(array $net, array $tx, bool $resolve = true): array
 {
     // Short cache: spent-flags are mutable (an output can be spent any time), but
     // a cheap window stops a crawler re-running the per-output gettxout batch on
-    // every /outspends poll of a many-output tx.
-    $ckey = 'outspends:' . $net['slug'] . ':' . $tx['txid'];
+    // every /outspends poll of a many-output tx. Resolved (full {txid,vin,status}) and
+    // flags-only results live under separate keys so a cheap UI call ($resolve=false)
+    // can't poison the API's full-shape cache.
+    $ckey = ($resolve ? 'outspends:' : 'outspendflags:') . $net['slug'] . ':' . $tx['txid'];
     $hit = cache_get($ckey);
     if ($hit !== null) {
         $d = json_decode($hit, true);
@@ -579,6 +581,7 @@ function ts_tx_outspends(array $net, array $tx): array
     }
     // gettxout returns null once an output leaves the UTXO set (spent). Chunk to
     // bound the batch size on pathologically large txs.
+    $spentIdx = [];
     foreach (array_chunk($ask, 500) as $chunk) {
         $calls = [];
         foreach ($chunk as $i) {
@@ -586,13 +589,124 @@ function ts_tx_outspends(array $net, array $tx): array
         }
         $res = ts_rpc_batch($net, $calls);
         foreach ($chunk as $k => $i) {
-            $out[$i] = ['spent' => ($res[$k] ?? null) === null];
+            if (($res[$k] ?? null) === null) {
+                $spentIdx[] = $i;          // spent -> resolve the spender below
+            } else {
+                $out[$i] = ['spent' => false];
+            }
+        }
+    }
+    // For each spent output resolve WHO spent it, so the body carries the full Esplora
+    // shape {spent, txid, vin, status} (electrs / mempool.space parity). A bare
+    // {"spent":true} is a conformance bug: consumers that read outspend.txid — e.g. an
+    // atomic-swap maker extracting the HTLC secret from the spending tx — silently break.
+    // Memoize history-per-scripthash and fetched txs so a many-output tx paying one address
+    // costs a single history call plus one fetch per distinct spender.
+    if ($resolve) {
+        $histMemo = [];
+        $txMemo   = [];
+        foreach ($spentIdx as $i) {
+            $out[$i] = ts_resolve_outspend(
+                $net,
+                $tx['txid'],
+                $i,
+                $tx['vout'][$i]['scriptpubkey'] ?? '',
+                $histMemo,
+                $txMemo
+            );
+        }
+    } else {
+        foreach ($spentIdx as $i) {
+            $out[$i] = ['spent' => true];   // flags-only (UI badges); skip the spender lookup
         }
     }
     ksort($out);
     $result = array_values($out);
     cache_set($ckey, json_encode($result, JSON_UNESCAPED_SLASHES), 15);
     return $result;
+}
+
+/**
+ * Resolve the full Esplora outspend object for a SPENT output: locate the tx that consumes
+ * outpoint ($txid,$vout) via the output's scripthash history and return
+ * {spent:true, txid, vin, status}. Falls back to {spent:true} only if the spender can't be
+ * located (a transient electrs gap) — it never downgrades a spent output to unspent.
+ * $histMemo (scripthash -> tx_hash[]) and $txMemo (txid -> esplora tx) are per-call caches.
+ */
+function ts_resolve_outspend(array $net, string $txid, int $vout, string $spkHex, array &$histMemo, array &$txMemo): array
+{
+    if ($spkHex === '' || strlen($spkHex) % 2 !== 0) {
+        return ['spent' => true];
+    }
+    $sh = bin2hex(strrev(hash('sha256', hex2bin($spkHex), true)));
+    if (!array_key_exists($sh, $histMemo)) {
+        $ids = [];
+        foreach (ts_scripthash_history($net, $sh) as $h) {
+            $tid = $h['tx_hash'] ?? '';
+            if ($tid !== '' && $tid !== $txid) {
+                $ids[] = $tid;
+            }
+        }
+        $histMemo[$sh] = $ids;
+    }
+    foreach ($histMemo[$sh] as $cand) {
+        if (!array_key_exists($cand, $txMemo)) {
+            $txMemo[$cand] = ts_find_tx($net, $cand);
+        }
+        $ctx = $txMemo[$cand];
+        if (!is_array($ctx) || empty($ctx['vin'])) {
+            continue;
+        }
+        foreach ($ctx['vin'] as $k => $in) {
+            if (empty($in['is_coinbase'])
+                && ($in['txid'] ?? '') === $txid
+                && (int) ($in['vout'] ?? -1) === $vout) {
+                return [
+                    'spent'  => true,
+                    'txid'   => $cand,
+                    'vin'    => (int) $k,
+                    'status' => $ctx['status'] ?? ['confirmed' => false],
+                ];
+            }
+        }
+    }
+    return ['spent' => true]; // spent per gettxout, but the spender isn't locatable right now
+}
+
+/**
+ * Full Esplora outspend for ONE output of $tx (used by /tx/:txid/outspend/:vout). Cheaper
+ * than the batch when a caller needs a single output (e.g. a swap maker polling its HTLC
+ * output): it resolves the spender for that output only.
+ */
+function ts_tx_outspend(array $net, array $tx, int $vout): array
+{
+    if (!isset($tx['vout'][$vout])) {
+        return ['spent' => false];
+    }
+    $vo   = $tx['vout'][$vout];
+    $type = $vo['scriptpubkey_type'] ?? '';
+    $spk  = $vo['scriptpubkey'] ?? '';
+    if ($type === 'op_return' || substr($spk, 0, 2) === '6a') {
+        return ['spent' => false];
+    }
+    $ckey = 'outspend1:' . $net['slug'] . ':' . $tx['txid'] . ':' . $vout;
+    $hit = cache_get($ckey);
+    if ($hit !== null) {
+        $d = json_decode($hit, true);
+        if (is_array($d)) {
+            return $d;
+        }
+    }
+    $res = ts_rpc_batch($net, [['gettxout', [$tx['txid'], $vout, true]]]);
+    if (($res[0] ?? null) !== null) {
+        $r = ['spent' => false];   // still in the UTXO set
+    } else {
+        $histMemo = [];
+        $txMemo   = [];
+        $r = ts_resolve_outspend($net, $tx['txid'], $vout, $spk, $histMemo, $txMemo);
+    }
+    cache_set($ckey, json_encode($r, JSON_UNESCAPED_SLASHES), 15);
+    return $r;
 }
 
 /** Merkle inclusion proof (/tx/:txid/merkle-proof) via electrs. */

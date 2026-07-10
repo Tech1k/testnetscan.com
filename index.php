@@ -711,8 +711,7 @@ function ts_route_api(array $net, array $r, string $method): void
                 if (!$tx || !ctype_digit($n) || !isset($tx['vout'][(int) $n])) {
                     api_error('Not found', 404);
                 }
-                $all = ts_tx_outspends($net, $tx);
-                json_out($all[(int) $n]);
+                json_out(ts_tx_outspend($net, $tx, (int) $n));
             }
             if ($sub === 'merkle-proof') {
                 $tx = ts_find_tx($net, $txid);

@@ -46,8 +46,8 @@ $pkgRate = null;
 if ($mentry && isset($mentry['fees']['ancestor']) && ($mentry['ancestorsize'] ?? 0) > 0) {
     $pkgRate = coin_to_sat($mentry['fees']['ancestor']) / (int) $mentry['ancestorsize'];
 }
-// Output spent-status.
-$outspends = ts_tx_outspends($net, $tx);
+// Output spent-status (badges only need the spent flag -> skip the spender lookup).
+$outspends = ts_tx_outspends($net, $tx, false);
 // MWEB role (LTC only): peg-in tx, or the block's HogEx integration tx.
 $mwebInfo = ts_mweb_enabled($net) ? ts_mweb_tx_info($tx) : null;
 // RBF replacement chain + CPFP package (unconfirmed only).
