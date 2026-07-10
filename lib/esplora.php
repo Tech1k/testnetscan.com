@@ -605,6 +605,7 @@ function ts_tx_outspends(array $net, array $tx, bool $resolve = true): array
     if ($resolve) {
         $histMemo = [];
         $txMemo   = [];
+        $deadline = time() + 5; // ONE wall-clock budget shared across every spent output in this tx
         foreach ($spentIdx as $i) {
             $out[$i] = ts_resolve_outspend(
                 $net,
@@ -612,7 +613,8 @@ function ts_tx_outspends(array $net, array $tx, bool $resolve = true): array
                 $i,
                 $tx['vout'][$i]['scriptpubkey'] ?? '',
                 $histMemo,
-                $txMemo
+                $txMemo,
+                $deadline
             );
         }
     } else {
@@ -633,11 +635,20 @@ function ts_tx_outspends(array $net, array $tx, bool $resolve = true): array
  * located (a transient electrs gap) — it never downgrades a spent output to unspent.
  * $histMemo (scripthash -> tx_hash[]) and $txMemo (txid -> esplora tx) are per-call caches.
  */
-function ts_resolve_outspend(array $net, string $txid, int $vout, string $spkHex, array &$histMemo, array &$txMemo): array
+function ts_resolve_outspend(array $net, string $txid, int $vout, string $spkHex, array &$histMemo, array &$txMemo, int $deadline = 0): array
 {
     if ($spkHex === '' || strlen($spkHex) % 2 !== 0) {
         return ['spent' => true];
     }
+    // Bound the work: an output on a heavily-reused address has a huge scripthash history,
+    // and resolving the spender is one getrawtransaction per candidate. Cap the candidates
+    // and honor a wall-clock deadline so a crafted /outspends can't pin an FPM worker; on
+    // budget-exceed we fall back to bare {spent:true}, which degrades safely (the maker's
+    // extractSecret re-validates the preimage, and a missing txid just retries).
+    if ($deadline <= 0) {
+        $deadline = time() + 4;
+    }
+    $cap = (int) (ts_config()['outspend_walk_limit'] ?? 200);
     $sh = bin2hex(strrev(hash('sha256', hex2bin($spkHex), true)));
     if (!array_key_exists($sh, $histMemo)) {
         $ids = [];
@@ -647,9 +658,16 @@ function ts_resolve_outspend(array $net, string $txid, int $vout, string $spkHex
                 $ids[] = $tid;
             }
         }
-        $histMemo[$sh] = $ids;
+        // Newest-first: a just-spent output's spender sits near the chain tip, so the common
+        // case (the maker polling a fresh spend) resolves in one fetch; the cap/deadline bound
+        // the pathological case (a spend buried deep in a giant reused-address history).
+        $histMemo[$sh] = array_reverse($ids);
     }
+    $seen = 0;
     foreach ($histMemo[$sh] as $cand) {
+        if (++$seen > $cap || time() > $deadline) {
+            break;
+        }
         if (!array_key_exists($cand, $txMemo)) {
             $txMemo[$cand] = ts_find_tx($net, $cand);
         }

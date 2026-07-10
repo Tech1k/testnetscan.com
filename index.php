@@ -702,10 +702,15 @@ function ts_route_api(array $net, array $r, string $method): void
                 $tx ? json_out($tx['status']) : api_error('Transaction not found', 404);
             }
             if ($sub === 'outspends') {
+                // Expensive (resolves the spender of every spent output); throttle hardest.
+                if (!ts_rate_limit('outspends_batch', 30, 60)) { api_error('rate limited', 429); }
                 $tx = ts_find_tx($net, $txid);
                 $tx ? json_out(ts_tx_outspends($net, $tx)) : api_error('Transaction not found', 404);
             }
             if ($sub === 'outspend') {
+                // Single output + bounded resolve; generous cap so a swap maker polling its
+                // HTLC output isn't throttled (and a 429 just makes it retry — no fund risk).
+                if (!ts_rate_limit('outspend_one', 180, 60)) { api_error('rate limited', 429); }
                 $tx = ts_find_tx($net, $txid);
                 $n = $r[3] ?? '';
                 if (!$tx || !ctype_digit($n) || !isset($tx['vout'][(int) $n])) {
