@@ -1986,7 +1986,7 @@ function ts_map_blockstats(array $s, string $hash, ?int $height): array
 
 function ts_block_stats(array $net, string $hash, ?int $height = null): ?array
 {
-    $ckey = 'bstats:' . $net['slug'] . ':' . $hash;
+    $ckey = 'bstats2:' . $net['slug'] . ':' . $hash;
     $hit = cache_get($ckey);
     if ($hit !== null) {
         $d = json_decode($hit, true);
@@ -2018,7 +2018,7 @@ function ts_recent_block_stats(array $net, int $count = 12): array
     foreach ($heights as $h) {
         if (!isset($hashes[$h])) { break; }
         $hash = $hashes[$h];
-        $c = cache_get('bstats:' . $net['slug'] . ':' . $hash);
+        $c = cache_get('bstats2:' . $net['slug'] . ':' . $hash);
         if ($c !== null) {
             $d = json_decode($c, true);
             if (is_array($d)) { $stats[$h] = $d; continue; }
@@ -2034,7 +2034,7 @@ function ts_recent_block_stats(array $net, int $count = 12): array
             $s = $res[$i++] ?? null;
             if (is_array($s)) {
                 $mapped = ts_map_blockstats($s, $hash, $h);
-                cache_set('bstats:' . $net['slug'] . ':' . $hash, json_encode($mapped, JSON_UNESCAPED_SLASHES), ($tip - $mapped['height']) > 100 ? 0 : 600);
+                cache_set('bstats2:' . $net['slug'] . ':' . $hash, json_encode($mapped, JSON_UNESCAPED_SLASHES), ($tip - $mapped['height']) > 100 ? 0 : 600);
                 $stats[$h] = $mapped;
             }
         }

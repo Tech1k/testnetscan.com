@@ -885,9 +885,11 @@ function ts_route_api(array $net, array $r, string $method): void
                 api_error('Not found', 404);
             }
             if (($r[1] ?? '') === 'blocks-bulk') {
+                if (!ts_rate_limit('blocks_bulk', 30, 60)) { api_error('rate limited', 429); }   // up to 100 per-block expansions/request
                 json_out(ts_blocks_bulk_api($net, (int) ($r[2] ?? 0), (int) ($r[3] ?? 0)), 200, 60);
             }
             if (($r[1] ?? '') === 'blocks') {
+                if (!ts_rate_limit('blocks_ext', 60, 60)) { api_error('rate limited', 429); }   // 15 per-block expansions/request
                 $start = isset($r[2]) && ctype_digit((string) $r[2]) ? (int) $r[2] : null;
                 json_out(ts_blocks_extended_api($net, $start), 200, 60);
             }
