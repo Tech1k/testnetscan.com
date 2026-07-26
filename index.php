@@ -388,6 +388,14 @@ function ts_handle_search(array $net, string $method): void
         header('Location: ' . $base . '/', true, 302);
         return;
     }
+    // Throttle per IP: search does uncached negative lookups (getblockheader + tx find) that a
+    // ?q=<random 64-hex> flood would amplify onto Core RPC + electrs.
+    if (function_exists('ts_rate_limit') && !ts_rate_limit('search', 60, 60)) {
+        http_response_code(429);
+        header('Retry-After: 10');
+        echo 'Rate limit reached. Please wait a moment and try again.';
+        return;
+    }
     // height
     if (ctype_digit($q)) {
         $hash = ts_block_hash_at($net, (int) $q);
@@ -572,6 +580,7 @@ function ts_route_api(array $net, array $r, string $method): void
 
     // ---- broadcast --------------------------------------------------------
     if ($a === 'tx' && $method === 'POST' && !isset($r[1])) {
+        if (!ts_rate_limit('broadcast', 30, 60)) { api_error('rate limited', 429); }   // gate before reading the body
         [$txid, $err] = ts_broadcast($net, request_body());
         if ($txid !== null) {
             text_out($txid);
@@ -579,7 +588,7 @@ function ts_route_api(array $net, array $r, string $method): void
         api_error($err ?? 'broadcast failed', 400);
     }
 
-    if ($method !== 'GET') {
+    if ($method !== 'GET' && $method !== 'HEAD') {   // HEAD: uptime monitors + drop-in Esplora clients (Apache strips the body)
         api_error('Method not allowed', 405);
     }
 
@@ -745,7 +754,7 @@ function ts_route_api(array $net, array $r, string $method): void
             $sub = $r[2] ?? '';
             if ($sub === '') {
                 $st = ts_address_stats($net, $addr);
-                $st ? json_out($st) : api_error('Invalid address', 400);
+                $st ? json_out($st) : api_error('Address index unavailable', 503);   // address already validated above; null = electrs down
             }
             if ($sub === 'txs') {
                 $kind = $r[3] ?? '';
@@ -772,7 +781,8 @@ function ts_route_api(array $net, array $r, string $method): void
             $sh = strtolower($sh);
             $sub = $r[2] ?? '';
             if ($sub === '') {
-                json_out(ts_scripthash_stats($net, $sh));
+                $st = ts_scripthash_stats($net, $sh);
+                $st ? json_out($st) : api_error('Address index unavailable', 503);
             }
             if ($sub === 'txs') {
                 $kind = $r[3] ?? '';

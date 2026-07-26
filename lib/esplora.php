@@ -652,7 +652,7 @@ function ts_resolve_outspend(array $net, string $txid, int $vout, string $spkHex
     $sh = bin2hex(strrev(hash('sha256', hex2bin($spkHex), true)));
     if (!array_key_exists($sh, $histMemo)) {
         $ids = [];
-        foreach (ts_scripthash_history($net, $sh) as $h) {
+        foreach ((ts_scripthash_history($net, $sh) ?? []) as $h) {
             $tid = $h['tx_hash'] ?? '';
             if ($tid !== '' && $tid !== $txid) {
                 $ids[] = $tid;
@@ -861,9 +861,12 @@ function ts_recent_blocks(array $net, ?int $startHeight = null, int $count = 10)
  * tx_count exact while the per-output breakdown is approximate. This also
  * defuses the unauthenticated walk-amplification DoS.
  */
-function ts_stats_for_scripthash(array $net, string $sh, callable $match, string $keyName, string $keyVal): array
+function ts_stats_for_scripthash(array $net, string $sh, callable $match, string $keyName, string $keyVal): ?array
 {
     $history = ts_scripthash_history($net, $sh);
+    if ($history === null) {
+        return null;   // electrs unavailable - never report (or cache) a false zero balance
+    }
     $conf = [];
     $mem  = [];
     $maxH = 0;
@@ -910,12 +913,13 @@ function ts_stats_for_scripthash(array $net, string $sh, callable $match, string
         } catch (Throwable $e) {
             $bal = null;
         }
-        if (is_array($bal)) {
-            $chain['funded_txo_sum']   = max(0, (int) ($bal['confirmed'] ?? 0));
-            $chain['funded_txo_count'] = count($conf);
-            $mem2['funded_txo_sum']    = max(0, (int) ($bal['unconfirmed'] ?? 0));
-            $mem2['funded_txo_count']  = count($mem);
+        if (!is_array($bal)) {
+            return null;   // electrs blipped mid-request on a busy address - degrade, never a false 0
         }
+        $chain['funded_txo_sum']   = max(0, (int) ($bal['confirmed'] ?? 0));
+        $chain['funded_txo_count'] = count($conf);
+        $mem2['funded_txo_sum']    = max(0, (int) ($bal['unconfirmed'] ?? 0));
+        $mem2['funded_txo_count']  = count($mem);
     } else {
         $deadline = time() + 6; // wall-clock budget, never pin a worker
         // Batch the resolution in chunks of 25 (via ts_esplora_txs) so a cold page
@@ -985,7 +989,7 @@ function ts_address_txs(array $net, string $address, string $mode = 'all', ?stri
         return null;
     }
     $sh = bin2hex(strrev(hash('sha256', hex2bin($spk), true)));
-    $history = ts_scripthash_history($net, $sh);   // cached (coalesces repeated polls)
+    $history = ts_scripthash_history($net, $sh) ?? [];   // cached (coalesces repeated polls); null (electrs down) -> empty list, page already degrades via stats
 
     $confirmed = [];
     $mempool = [];
@@ -1375,20 +1379,27 @@ function ts_find_tx_hex(array $net, string $txid): ?string
 
 // ---- scripthash endpoints (full Esplora compat) ---------------------------
 
-function ts_scripthash_history(array $net, string $sh): array
+function ts_scripthash_history(array $net, string $sh): ?array
 {
     // Short server cache: the FULL history is fetched on every address/scripthash
     // stats + tx-list request (the astats fingerprint key is derived from it, so
     // it runs even on a warm stats cache). Coalescing repeated polls/crawls of the
     // same address into one electrs round-trip defuses that amplification.
+    // Returns NULL when electrs is unreachable/erroring (index down or mid-resync) so callers
+    // degrade instead of showing a false, confident "0 balance". An empty array is a genuinely
+    // unused address.
     $cached = cache_remember('shist:' . $net['slug'] . ':' . $sh, 8, function () use ($net, $sh) {
-        $h = ts_electrum($net)->request('blockchain.scripthash.get_history', [$sh]);
+        try {
+            $h = ts_electrum($net)->request('blockchain.scripthash.get_history', [$sh]);
+        } catch (Throwable $e) {
+            return null;   // electrs unreachable -> not cached; caller treats as unavailable
+        }
         return is_array($h) ? $h : null;   // null -> not cached (transient electrs error)
     });
-    return is_array($cached) ? $cached : [];
+    return is_array($cached) ? $cached : null;
 }
 
-function ts_scripthash_stats(array $net, string $sh): array
+function ts_scripthash_stats(array $net, string $sh): ?array
 {
     $match = function ($spkHex) use ($sh) {
         if ($spkHex === '') {
@@ -1401,7 +1412,7 @@ function ts_scripthash_stats(array $net, string $sh): array
 
 function ts_scripthash_txs(array $net, string $sh, string $mode = 'all', ?string $afterTxid = null): array
 {
-    $history = ts_scripthash_history($net, $sh);
+    $history = ts_scripthash_history($net, $sh) ?? [];
     $conf = [];
     $mem = [];
     foreach ($history as $r) {

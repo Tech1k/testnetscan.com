@@ -55,6 +55,17 @@ $types = ['p2wpkh' => 'Native SegWit', 'p2sh' => 'Nested SegWit', 'p2pkh' => 'Le
 $qtype = isset($_GET['type']) && isset($types[$_GET['type']]) ? $_GET['type'] : null;
 $chosen = $qtype !== null ? $qtype : ($parsed['type'] === 'p2pkh' ? 'p2wpkh' : $parsed['type']);
 
+// Money tool: probe electrs up front so a total outage degrades cleanly (503) instead of
+// deriving 10 addresses that each fail. Per-address failures are still caught below ($failed).
+if (!ts_electrum_reachable($net)) {
+    http_response_code(503);
+    if (!headers_sent()) { header('Retry-After: 30'); header('Cache-Control: no-store'); }
+    ts_head($net, ['title' => 'Extended key - ' . $net['label']]);
+    echo '<h1>Extended public key</h1><div class="card"><div class="card-b"><p class="muted">The address index is temporarily unavailable. Please try again shortly.</p></div></div>';
+    ts_foot($net);
+    return;
+}
+
 // Derive + look up balances (each address is an Electrum round-trip), cached. This is a
 // money tool: an electrs blip (ts_address_stats === null) must NOT be reported as a genuine
 // 0-balance wallet, and a false zero must never be cached. $failed (by ref) distinguishes an
