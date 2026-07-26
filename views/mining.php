@@ -59,6 +59,7 @@ $sizeBars = [];
 $frBars = [];       // median fee rate per block (min-max in tooltip)
 $wtBars = [];       // block weight
 $fsRows = [];       // fees-vs-subsidy stacked (subsidy + fees)
+$fsTips = [];       // native-title tooltips for the reward-composition chart
 $rwReward = 0; $rwFees = 0; $rwTxs = 0;
 foreach (array_reverse($stats) as $b) {
     $bh = number_format($b['height']);
@@ -67,6 +68,10 @@ foreach (array_reverse($stats) as $b) {
     $frBars[]   = ['value' => $b['med_feerate'], 'title' => 'Block ' . $bh . ' · median ' . number_format((float) $b['med_feerate'], 2) . ' sat/vB · range ' . number_format((float) $b['min_feerate'], 2) . '–' . number_format((float) $b['max_feerate'], 2)];
     $wtBars[]   = ['value' => $b['weight'],    'title' => 'Block ' . $bh . ' · ' . commas($b['weight']) . ' WU · ' . commas($b['txs']) . ' tx'];
     $fsRows[]   = ['height' => $b['height'], 'subsidy' => $b['subsidy'], 'total_fee' => $b['total_fee']];
+    $fsTips[]   = ts_tip_json('Block #' . $bh, [
+        ['c' => '#3b82f6', 'k' => 'Subsidy', 'v' => ts_coin((int) $b['subsidy']) . ' ' . $net['unit']],
+        ['c' => '#f59e0b', 'k' => 'Fees',    'v' => ts_coin((int) $b['total_fee']) . ' ' . $net['unit']],
+    ]);
     $rwReward += (int) $b['subsidy'] + (int) $b['total_fee'];
     $rwFees   += (int) $b['total_fee'];
     $rwTxs    += (int) $b['txs'];
@@ -286,6 +291,7 @@ if (count($dser) >= 2) {
   <div class="card-h"><span><?= ts_icon('gift') ?>Block reward composition</span> <span class="sub">subsidy + fees · <?= h($net['unit']) ?></span></div>
   <div class="card-b"><?= ts_chart_stacked($fsRows, 'height', ['subsidy', 'total_fee'], ['#3b82f6', '#f59e0b'], 'Block reward: subsidy and fees per block', [
       'yfmt'   => 'ts_coin_compact',
+      'tips'   => $fsTips,
       'legend' => [['color' => '#3b82f6', 'label' => 'Subsidy'], ['color' => '#f59e0b', 'label' => 'Fees']],
   ]) ?></div>
 </div>

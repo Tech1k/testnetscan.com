@@ -46,8 +46,10 @@ $pkgRate = null;
 if ($mentry && isset($mentry['fees']['ancestor']) && ($mentry['ancestorsize'] ?? 0) > 0) {
     $pkgRate = coin_to_sat($mentry['fees']['ancestor']) / (int) $mentry['ancestorsize'];
 }
-// Output spent-status (badges only need the spent flag -> skip the spender lookup).
-$outspends = ts_tx_outspends($net, $tx, false);
+// Output spent-status + spender txid: badges need the flag, and the value-flow diagram
+// links each spent output to the tx that spent it (forward navigation), so resolve the
+// spender here (bounded by rate-limit / deadline / walk-cap in ts_tx_outspends).
+$outspends = ts_tx_outspends($net, $tx, true);
 // MWEB role (LTC only): peg-in tx, or the block's HogEx integration tx.
 $mwebInfo = ts_mweb_enabled($net) ? ts_mweb_tx_info($tx) : null;
 // RBF replacement chain + CPFP package (unconfirmed only).
@@ -194,6 +196,13 @@ ts_head($net, [
     </table>
   </div>
 </div>
+
+<?php if (!empty($tx['vout'])): ?>
+<div class="card">
+  <div class="card-h"><span><?= ts_icon('repeat') ?>Value flow</span> <span class="sub">inputs &rarr; outputs + fee</span></div>
+  <div class="card-b"><?= ts_tx_flow($net, $tx, $outspends) ?></div>
+</div>
+<?php endif; ?>
 
 <div class="txio">
   <div class="card">

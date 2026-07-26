@@ -17,14 +17,39 @@ $epochs = ts_difficulty_epochs($net, 12);          // retarget history
 ts_head($net, ['title' => 'Charts - ' . $net['label'] . ' - TestnetScan']);
 
 // ---- per-block bar/stack series (Blocks section) ----------------------------
-$feeBars = []; $sizeBars = []; $frBars = []; $wtBars = []; $fsRows = [];
-foreach (array_reverse($stats) as $b) {
-    $bh = number_format($b['height']);
-    $feeBars[]  = ['value' => $b['total_fee'], 'title' => 'Block ' . $bh . ' · ' . ts_coin((int) $b['total_fee']) . ' ' . $net['unit'] . ' fees · ' . commas($b['txs']) . ' tx'];
-    $sizeBars[] = ['value' => $b['size'],      'title' => 'Block ' . $bh . ' · ' . ts_size_str((int) $b['size'], 'B') . ' · ' . commas($b['txs']) . ' tx'];
-    $frBars[]   = ['value' => $b['med_feerate'], 'title' => 'Block ' . $bh . ' · median ' . number_format((float) $b['med_feerate'], 2) . ' sat/vB · range ' . number_format((float) $b['min_feerate'], 2) . '–' . number_format((float) $b['max_feerate'], 2)];
-    $wtBars[]   = ['value' => $b['weight'],    'title' => 'Block ' . $bh . ' · ' . commas($b['weight']) . ' WU · ' . commas($b['txs']) . ' tx'];
-    $fsRows[]   = ['height' => $b['height'], 'subsidy' => $b['subsidy'], 'total_fee' => $b['total_fee']];
+// A ?period= (24h..all) sources these from the bucketed block index (long-range
+// history); otherwise the last 30 blocks straight from the node. Falls back to the
+// 30-block path when the index has no coverage yet for the chosen period.
+$period   = (isset($_GET['period']) && ts_period_valid((string) $_GET['period'])) ? (string) $_GET['period'] : '';
+$biSeries = ($period !== '' && function_exists('ts_blockindex_series')) ? ts_blockindex_series($net, $period) : [];
+$blkSub   = $biSeries ? (count($biSeries) . ' pts · ' . strtoupper($period)) : ('last ' . count($stats));
+$feeBars = []; $sizeBars = []; $frBars = []; $wtBars = []; $fsRows = []; $fsTips = [];
+if ($biSeries) {
+    foreach ($biSeries as $b) {
+        $lab = 'Block ~#' . number_format((int) $b['avgHeight']);
+        $feeBars[]  = ['value' => $b['avgFees'],   'title' => $lab . ' · avg ' . ts_coin((int) round($b['avgFees'])) . ' ' . $net['unit'] . ' fees'];
+        $sizeBars[] = ['value' => $b['avgSize'],   'title' => $lab . ' · avg ' . ts_size_str((int) round($b['avgSize']), 'B')];
+        $frBars[]   = ['value' => $b['p50'],       'title' => $lab . ' · median ' . number_format((float) $b['p50'], 2) . ' sat/vB'];
+        $wtBars[]   = ['value' => $b['avgWeight'], 'title' => $lab . ' · avg ' . commas((int) round($b['avgWeight'])) . ' WU'];
+        $fsRows[]   = ['height' => (int) $b['avgHeight'], 'subsidy' => max(0, $b['avgRewards'] - $b['avgFees']), 'total_fee' => $b['avgFees']];
+        $fsTips[]   = ts_tip_json($lab, [
+            ['c' => '#3b82f6', 'k' => 'Subsidy', 'v' => ts_coin_compact(max(0, $b['avgRewards'] - $b['avgFees'])) . ' ' . $net['unit']],
+            ['c' => '#f59e0b', 'k' => 'Fees',    'v' => ts_coin_compact((float) $b['avgFees']) . ' ' . $net['unit']],
+        ]);
+    }
+} else {
+    foreach (array_reverse($stats) as $b) {
+        $bh = number_format($b['height']);
+        $feeBars[]  = ['value' => $b['total_fee'], 'title' => 'Block ' . $bh . ' · ' . ts_coin((int) $b['total_fee']) . ' ' . $net['unit'] . ' fees · ' . commas($b['txs']) . ' tx'];
+        $sizeBars[] = ['value' => $b['size'],      'title' => 'Block ' . $bh . ' · ' . ts_size_str((int) $b['size'], 'B') . ' · ' . commas($b['txs']) . ' tx'];
+        $frBars[]   = ['value' => $b['med_feerate'], 'title' => 'Block ' . $bh . ' · median ' . number_format((float) $b['med_feerate'], 2) . ' sat/vB · range ' . number_format((float) $b['min_feerate'], 2) . '–' . number_format((float) $b['max_feerate'], 2)];
+        $wtBars[]   = ['value' => $b['weight'],    'title' => 'Block ' . $bh . ' · ' . commas($b['weight']) . ' WU · ' . commas($b['txs']) . ' tx'];
+        $fsRows[]   = ['height' => $b['height'], 'subsidy' => $b['subsidy'], 'total_fee' => $b['total_fee']];
+        $fsTips[]   = ts_tip_json('Block #' . $bh, [
+            ['c' => '#3b82f6', 'k' => 'Subsidy', 'v' => ts_coin((int) $b['subsidy']) . ' ' . $net['unit']],
+            ['c' => '#f59e0b', 'k' => 'Fees',    'v' => ts_coin((int) $b['total_fee']) . ' ' . $net['unit']],
+        ]);
+    }
 }
 
 // ---- difficulty / hashrate labels + tips (Mining section) -------------------
@@ -84,7 +109,28 @@ foreach ($hist as $r) {
     $stackTips[] = ts_tip_json(gmdate('M j, H:i', (int) $r['ts']), $trows);
 }
 
-$hasAny = (count($hist) >= 2) || (count($dser) >= 2) || !empty($stats);
+// ---- long-range: coin-supply curve (deterministic halving schedule, no external data) ----
+$supplyRows = []; $supplyLabels = []; $supplyXticks = [];
+$tipH = ts_tip_height($net);
+if ($tipH > 0 && in_array(($net['coin'] ?? ''), array('btc', 'ltc'), true)) {
+    $interval = ($net['coin'] === 'ltc') ? 840000 : 210000; $sub0 = 5000000000;
+    $minedAt = function ($h) use ($interval, $sub0) {
+        $blocks = $h + 1; $sub = $sub0; $mined = 0;
+        while ($blocks > 0 && $sub > 0) {
+            $take = $blocks < $interval ? $blocks : $interval;
+            $mined += $take * $sub; $blocks -= $take; $sub = intdiv($sub, 2);
+        }
+        return $mined;
+    };
+    for ($i = 0; $i <= 40; $i++) {
+        $hh = (int) round($tipH * $i / 40);
+        $co = $minedAt($hh) / 100000000;
+        $supplyRows[]   = array('h' => $hh, 'supply' => $co);
+        $supplyLabels[] = '#' . number_format($hh) . ' · ' . number_format($co) . ' ' . $net['unit'];
+    }
+    for ($i = 0; $i <= 4; $i++) { $supplyXticks[] = array('f' => $i / 4, 'label' => '#' . ts_num_compact((int) round($tipH * $i / 4))); }
+}
+$hasAny = (count($hist) >= 2) || (count($dser) >= 2) || !empty($stats) || count($supplyRows) >= 2;
 ?>
 <h1>Charts</h1>
 <p class="muted sub">All server-rendered analytics for <?= h($net['label']) ?> in one place. The mempool &amp; fee series are fed by periodic snapshots; block series come straight from the node. The same charts also appear on the <a href="<?= h($base) ?>/mempool">Mempool</a> and <a href="<?= h($base) ?>/mining">Mining</a> dashboards.</p>
@@ -158,37 +204,42 @@ $hasAny = (count($hist) >= 2) || (count($dser) >= 2) || !empty($stats);
 </div>
 <?php endif; ?>
 
-<?php if (!empty($epochs)): ?>
+<?php if (!empty($epochs)):
+    $epochRows = []; $epochLabels = []; $epochTips = [];
+    foreach (array_reverse($epochs) as $e) {
+        $pct = (float) $e['pct_change'];
+        $epochRows[]   = array('up' => max(0.0, $pct), 'down' => max(0.0, -$pct));
+        $epochLabels[] = '#' . number_format((int) $e['height']) . ' · ' . ($pct >= 0 ? '+' : '') . number_format($pct, 2) . '%';
+        $epochTips[]   = ts_tip_json(gmdate('Y-m-d', (int) $e['time']) . ' · retarget #' . number_format((int) $e['height']), array(
+            array('c' => $pct >= 0 ? 'var(--ok)' : 'var(--bad)', 'k' => 'Change',     'v' => ($pct >= 0 ? '+' : '') . number_format($pct, 2) . '%'),
+            array('c' => 'var(--muted)',                         'k' => 'Difficulty', 'v' => ts_diff_str((float) $e['difficulty'])),
+        ));
+    }
+?>
 <div class="card">
-  <div class="card-h"><span><?= ts_icon('target') ?>Difficulty adjustments</span> <span class="sub">every 2,016 blocks</span></div>
-  <div class="card-b nopad table-wrap">
-    <table>
-      <thead><tr><th>Retarget</th><th class="amt">Date</th><th class="amt">Difficulty</th><th class="amt">Change</th></tr></thead>
-      <tbody>
-      <?php foreach ($epochs as $e): ?>
-        <tr>
-          <td><a href="<?= h($base) ?>/block-height/<?= (int) $e['height'] ?>">#<?= commas($e['height']) ?></a></td>
-          <td class="amt muted"><?= h(gmdate('Y-m-d', (int) $e['time'])) ?></td>
-          <td class="amt mono"><?= h(ts_diff_str((float) $e['difficulty'])) ?></td>
-          <td class="amt"><span class="<?= $e['pct_change'] >= 0 ? 'pos' : 'neg' ?>"><?= ($e['pct_change'] >= 0 ? '+' : '') . h(number_format($e['pct_change'], 2)) ?>%</span></td>
-        </tr>
-      <?php endforeach; ?>
-      </tbody>
-    </table>
-  </div>
+  <div class="card-h"><span><?= ts_icon('target') ?>Difficulty adjustments</span> <span class="sub">per 2,016-block retarget &middot; %</span></div>
+  <div class="card-b"><?= ts_chart_diverging($epochRows, 'up', 'down', 'Difficulty change per retarget (increase above, decrease below)', $epochLabels, [
+      'yfmt'   => function ($v, $step = 0.0) { return number_format($v, ts_step_dec($step, 1)) . '%'; },
+      'tips'   => $epochTips,
+      'legend' => [['color' => 'var(--ok)', 'label' => 'Increase'], ['color' => 'var(--bad)', 'label' => 'Decrease']],
+  ]) ?></div>
 </div>
 <?php endif; ?>
 
-<?php if ($stats): ?>
-<div class="section-h">Blocks</div>
+<?php if ($stats || $biSeries): ?>
+<div class="section-h" id="blocks">Blocks</div>
+<div class="period-sel"><?php $pers = ['' => 'Recent', '24h' => '24h', '3d' => '3d', '1w' => '1w', '1m' => '1m', '3m' => '3m', '6m' => '6m', '1y' => '1y', 'all' => 'All']; foreach ($pers as $pk => $pl): ?><a class="<?= $period === $pk ? 'on' : '' ?>" href="<?= h($base) ?>/charts<?= $pk !== '' ? '?period=' . h($pk) : '' ?>#blocks"><?= h($pl) ?></a><?php endforeach; ?></div>
+<?php if ($period !== '' && !$biSeries): ?>
+<p class="muted sub">No indexed coverage for <?= h(strtoupper($period)) ?> yet &mdash; the block index backfills over time; showing recent blocks.</p>
+<?php endif; ?>
 <div class="txio">
   <div class="card">
-    <div class="card-h"><span><?= ts_icon('trending-up') ?>Fees per block</span> <span class="sub">last <?= count($stats) ?> · <?= h($net['unit']) ?></span></div>
+    <div class="card-h"><span><?= ts_icon('trending-up') ?>Fees per block</span> <span class="sub"><?= h($blkSub) ?> · <?= h($net['unit']) ?></span></div>
     <div class="card-b"><?= ts_chart_bars($feeBars, 'Total fees per block', ['yfmt' => 'ts_coin_compact']) ?></div>
   </div>
   <div class="card">
-    <div class="card-h"><span><?= ts_icon('layers') ?>Block size</span> <span class="sub">last <?= count($stats) ?></span></div>
-    <div class="card-b"><?= ts_chart_bars($sizeBars, 'Block size, last ' . count($stats) . ' blocks', ['yfmt' => function ($v) { return ts_size_str((int) $v, 'B'); }]) ?></div>
+    <div class="card-h"><span><?= ts_icon('layers') ?>Block size</span> <span class="sub"><?= h($blkSub) ?></span></div>
+    <div class="card-b"><?= ts_chart_bars($sizeBars, 'Block size', ['yfmt' => function ($v) { return ts_size_str((int) $v, 'B'); }]) ?></div>
   </div>
 </div>
 <div class="txio">
@@ -197,7 +248,7 @@ $hasAny = (count($hist) >= 2) || (count($dser) >= 2) || !empty($stats);
     <div class="card-b"><?= ts_chart_bars($frBars, 'Median fee rate per block', ['yfmt' => function ($v, $step = 0.0) { return number_format($v, ts_step_dec($step, 1)) . ' s/vB'; }]) ?></div>
   </div>
   <div class="card">
-    <div class="card-h"><span><?= ts_icon('layers') ?>Block weight</span> <span class="sub">last <?= count($stats) ?> · WU</span></div>
+    <div class="card-h"><span><?= ts_icon('layers') ?>Block weight</span> <span class="sub"><?= h($blkSub) ?> · WU</span></div>
     <div class="card-b"><?= ts_chart_bars($wtBars, 'Block weight per block', ['yfmt' => function ($v) { return ts_size_str((int) $v, 'WU'); }]) ?></div>
   </div>
 </div>
@@ -205,7 +256,17 @@ $hasAny = (count($hist) >= 2) || (count($dser) >= 2) || !empty($stats);
   <div class="card-h"><span><?= ts_icon('gift') ?>Block reward composition</span> <span class="sub">subsidy + fees · <?= h($net['unit']) ?></span></div>
   <div class="card-b"><?= ts_chart_stacked($fsRows, 'height', ['subsidy', 'total_fee'], ['#3b82f6', '#f59e0b'], 'Block reward: subsidy and fees per block', [
       'yfmt'   => 'ts_coin_compact',
+      'tips'   => $fsTips,
       'legend' => [['color' => '#3b82f6', 'label' => 'Subsidy'], ['color' => '#f59e0b', 'label' => 'Fees']],
+  ]) ?></div>
+</div>
+<?php endif; ?>
+<?php if (count($supplyRows) >= 2): ?>
+<div class="section-h">Supply</div>
+<div class="card">
+  <div class="card-h"><span><?= ts_icon('database') ?>Coin supply</span> <span class="sub">issued &middot; <?= h($net['unit']) ?></span></div>
+  <div class="card-b"><?= ts_chart_area($supplyRows, 'h', 'supply', $net['label'] . ' supply issued over time', $supplyLabels, [
+      'yfmt' => 'ts_num_compact', 'xticks' => $supplyXticks, 'baseline' => 'zero',
   ]) ?></div>
 </div>
 <?php endif; ?>

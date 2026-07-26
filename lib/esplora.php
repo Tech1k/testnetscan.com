@@ -1346,12 +1346,20 @@ function ts_get_confirmed_blockhash(array $net, string $txid): ?string
 /** Resolve a tx even if the node lacks txindex (ask electrs for its block). */
 function ts_find_tx(array $net, string $txid): ?array
 {
+    $nk = 'txnf:' . $net['slug'] . ':' . $txid;
+    if (cache_get($nk) !== null) {
+        return null;                              // recently not-found; skip the RPC + electrs walk
+    }
     $tx = ts_esplora_tx($net, $txid);
     if ($tx) {
         return $tx;
     }
     $bh = ts_get_confirmed_blockhash($net, $txid);
-    return $bh ? ts_esplora_tx($net, $txid, $bh) : null;
+    $tx = $bh ? ts_esplora_tx($net, $txid, $bh) : null;
+    if ($tx === null) {
+        cache_set($nk, '1', 30);                  // brief negative cache against not-found floods (search probes, bots)
+    }
+    return $tx;
 }
 
 /** Raw hex with the same no-txindex fallback. */
@@ -1880,12 +1888,32 @@ function ts_txoutset_info(array $net): ?array
  * expensive muhash) and cache it ~30 min. Fully soft. Called by the snapshot
  * cron so the Node page reads a warm value instead of scanning the chainstate.
  */
-function ts_txoutset_refresh(array $net): ?array
+function ts_txoutset_refresh(array $net, bool $force = false): ?array
 {
+    $key = 'txoutset:' . $net['slug'];
+    // gettxoutsetinfo walks the whole chainstate unless the node has coinstatsindex
+    // (a Bitcoin Core 22 feature Litecoin Core never rebased), so on ltc-testnet it is a
+    // minutes-long cs_main lock with no fast path. Scan rarely: the long cache below is the
+    // cadence, and the cron calling this every run is a cheap no-op until it expires.
+    // $force (`snapshot.php --utxo`) bypasses the cache + debounce.
+    if (!$force) {
+        $cached = cache_get($key);
+        if ($cached !== null) {
+            $d = json_decode((string) $cached, true);
+            return is_array($d) ? $d : null;
+        }
+        // Debounce so two overlapping cron runs can't both launch the expensive scan.
+        if (cache_get($key . ':scan') !== null) {
+            return null;
+        }
+    }
+    cache_set($key . ':scan', '1', 1320);   // must outlive the scan below so two runs can't overlap
     try {
-        $r = ts_rpc_soft($net, 'gettxoutsetinfo', ['none']);
+        // Long per-call timeout (20 min ceiling, not a fixed wait): a coinstatsindex-less
+        // node needs many minutes on a large chainstate. 'none' skips the muhash.
+        $r = ts_rpc_soft($net, 'gettxoutsetinfo', ['none'], 1200);
         if (!is_array($r)) {
-            $r = ts_rpc_soft($net, 'gettxoutsetinfo');
+            $r = ts_rpc_soft($net, 'gettxoutsetinfo', [], 1200);
         }
     } catch (Throwable $e) {
         return null;
@@ -1901,8 +1929,23 @@ function ts_txoutset_refresh(array $net): ?array
         'disk_size'    => (int) ($r['disk_size'] ?? 0),
         'total_amount' => (float) ($r['total_amount'] ?? 0),
     ];
-    cache_set('txoutset:' . $net['slug'], json_encode($data), 1800);
+    // 6h: UTXO-set totals move slowly and the scan is a minutes-long cs_main lock.
+    cache_set($key, json_encode($data), 21600);
     return $data;
+}
+
+/** Best-effort Electrum reachability probe (10s-cached server.ping) - used to degrade
+ *  address/xpub pages instead of rendering a false 0-balance during an electrs outage. */
+function ts_electrum_reachable(array $net): bool
+{
+    return (bool) cache_remember('electrumok:' . $net['slug'], 10, function () use ($net) {
+        try {
+            ts_electrum($net)->request('server.ping');
+            return true;
+        } catch (Throwable $e) {
+            return false;
+        }
+    });
 }
 
 /**
@@ -1934,6 +1977,9 @@ function ts_map_blockstats(array $s, string $hash, ?int $height): array
         'med_feerate' => (float) ($pct[2] ?? $s['avgfeerate'] ?? 0),
         'min_feerate' => (float) ($s['minfeerate'] ?? 0),
         'max_feerate' => (float) ($s['maxfeerate'] ?? 0),
+        'avg_feerate' => (float) ($s['avgfeerate'] ?? 0),
+        // p10/p25/p50/p75/p90 sat/vB (drives the fee-rates timeseries + block fee-range).
+        'feerate_pcts' => [(float) ($pct[0] ?? 0), (float) ($pct[1] ?? 0), (float) ($pct[2] ?? 0), (float) ($pct[3] ?? 0), (float) ($pct[4] ?? 0)],
         'time'        => (int) ($s['time'] ?? 0),
     ];
 }
@@ -2160,10 +2206,34 @@ function ts_mining_pools_api(array $net, int $window = 50): array
  * /api/v1/mining/hashrate[/:period] - estimated hashrate + difficulty over a
  * recent sampled window (oldest first), plus the current values.
  */
-function ts_mining_hashrate_api(array $net): array
+/** Target block spacing (seconds) for a UTXO network - drives period->blocks windows. */
+function ts_net_block_spacing(array $net): int
 {
+    return ($net['coin'] ?? '') === 'ltc' ? 150 : 600;   // LTC 2.5m, BTC 10m
+}
+
+/** Seconds in a mempool.space :timePeriod ('all' => 0 = unbounded). */
+function ts_period_seconds(string $period): int
+{
+    static $m = ['24h' => 86400, '3d' => 259200, '1w' => 604800, '1m' => 2592000, '3m' => 7776000,
+                 '6m' => 15552000, '1y' => 31536000, '2y' => 63072000, '3y' => 94608000, 'all' => 0];
+    return $m[$period] ?? 86400;
+}
+
+/** Blocks spanning a :timePeriod on this network ('all' => PHP_INT_MAX). */
+function ts_net_period_blocks(array $net, string $period): int
+{
+    $secs = ts_period_seconds($period);
+    if ($secs === 0) { return PHP_INT_MAX; }
+    return max(1, intdiv($secs, ts_net_block_spacing($net)));
+}
+
+function ts_mining_hashrate_api(array $net, string $period = ''): array
+{
+    // mempool.space /mining/hashrate/:timePeriod - sample window (in blocks) follows the period.
+    $span = $period === '' ? 12000 : min(1000000, ts_net_period_blocks($net, $period));
     $hr = [];
-    foreach (ts_difficulty_series($net, 30, 12000) as $r) {
+    foreach (ts_difficulty_series($net, 45, $span) as $r) {
         $hr[] = [
             'timestamp'   => (int) $r['time'],
             'height'      => (int) $r['height'],

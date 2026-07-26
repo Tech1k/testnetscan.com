@@ -69,6 +69,12 @@ function ts_audit_pdo(bool $create = false): ?PDO
             . 'added INTEGER NOT NULL DEFAULT 0, '
             . 'missing_txids TEXT NOT NULL DEFAULT \'[]\', added_txids TEXT NOT NULL DEFAULT \'[]\', '
             . 'PRIMARY KEY (net, height))');
+        // Idempotent column upgrades so an existing store gains the audit-summary fields.
+        try { $db->exec('ALTER TABLE mempool_snap ADD COLUMN proj_fees INTEGER NOT NULL DEFAULT 0'); } catch (Throwable $e) {}
+        foreach (['expected_fees INTEGER NOT NULL DEFAULT 0', 'expected_weight INTEGER NOT NULL DEFAULT 0',
+                  'template_txids TEXT NOT NULL DEFAULT \'[]\''] as $col) {
+            try { $db->exec("ALTER TABLE block_audit ADD COLUMN $col"); } catch (Throwable $e) {}
+        }
         return $pdo = $db;
     } catch (Throwable $e) {
         return $pdo = null;
@@ -93,7 +99,7 @@ function ts_audit_projected_txids(array $net): array
             continue;
         }
         $feeSat = isset($e['fees']['base']) ? coin_to_sat($e['fees']['base']) : coin_to_sat($e['fee'] ?? 0);
-        $rows[] = ['txid' => (string) $txid, 'rate' => $feeSat / $vs, 'vsize' => $vs];
+        $rows[] = ['txid' => (string) $txid, 'rate' => $feeSat / $vs, 'vsize' => $vs, 'fee' => $feeSat];
     }
     usort($rows, function ($a, $b) {
         return $b['rate'] <=> $a['rate'];   // highest fee rate first
@@ -103,14 +109,16 @@ function ts_audit_projected_txids(array $net): array
     }
     $ids = [];
     $acc = 0;
+    $fees = 0;
     foreach ($rows as $r) {
         if ($acc >= TS_AUDIT_CAP) {
             break;
         }
         $ids[] = $r['txid'];
         $acc += $r['vsize'];
+        $fees += (int) $r['fee'];
     }
-    return ['txids' => $ids, 'vsize' => $acc];
+    return ['txids' => $ids, 'vsize' => $acc, 'fees' => $fees];
 }
 
 /**
@@ -133,8 +141,8 @@ function ts_audit_snapshot(array $net): bool
         if (!$proj['txids']) {
             return false;   // empty mempool: nothing to predict
         }
-        $db->prepare('INSERT OR REPLACE INTO mempool_snap (net, ts, tip_height, proj_count, proj_vsize, txids) VALUES (?, ?, ?, ?, ?, ?)')
-           ->execute([$net['slug'], time(), (int) $tip, count($proj['txids']), (int) $proj['vsize'],
+        $db->prepare('INSERT OR REPLACE INTO mempool_snap (net, ts, tip_height, proj_count, proj_vsize, proj_fees, txids) VALUES (?, ?, ?, ?, ?, ?, ?)')
+           ->execute([$net['slug'], time(), (int) $tip, count($proj['txids']), (int) $proj['vsize'], (int) ($proj['fees'] ?? 0),
                       json_encode($proj['txids'], JSON_UNESCAPED_SLASHES)]);
         $db->prepare('DELETE FROM mempool_snap WHERE net = ? AND ts < ?')->execute([$net['slug'], time() - 172800]);
         return true;
@@ -175,10 +183,10 @@ function ts_audit_run(array $net, int $maxBlocks = 12): int
         foreach ($hs->fetchAll(PDO::FETCH_ASSOC) as $r) {
             $have[(int) $r['height']] = (string) $r['hash'];
         }
-        $find = $db->prepare('SELECT ts, txids FROM mempool_snap WHERE net = ? AND tip_height = ? AND ts <= ? ORDER BY ts DESC LIMIT 1');
+        $find = $db->prepare('SELECT ts, txids, proj_vsize, proj_fees FROM mempool_snap WHERE net = ? AND tip_height = ? AND ts <= ? ORDER BY ts DESC LIMIT 1');
         $ins  = $db->prepare('INSERT OR REPLACE INTO block_audit '
-            . '(net, height, hash, block_time, snap_ts, expected, mined, matched, missing, added, missing_txids, added_txids) '
-            . 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+            . '(net, height, hash, block_time, snap_ts, expected, mined, matched, missing, added, missing_txids, added_txids, expected_fees, expected_weight, template_txids) '
+            . 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
         $done = 0;
         for ($h = $from; $h <= $tip; $h++) {
             $hash = ts_block_hash_at($net, $h);
@@ -237,14 +245,22 @@ function ts_audit_run(array $net, int $maxBlocks = 12): int
             }
             $ins->execute([$net['slug'], $h, $hash, $btime, (int) $snap['ts'],
                 count($predicted), count($mined), $matched, $missingTotal, $addedTotal,
-                json_encode($missing, JSON_UNESCAPED_SLASHES), json_encode($added, JSON_UNESCAPED_SLASHES)]);
+                json_encode($missing, JSON_UNESCAPED_SLASHES), json_encode($added, JSON_UNESCAPED_SLASHES),
+                (int) ($snap['proj_fees'] ?? 0), (int) ($snap['proj_vsize'] ?? 0) * 4,
+                json_encode(array_slice($predicted, 0, 4000), JSON_UNESCAPED_SLASHES)]);
             $done++;
         }
-        // keep ~30 days of audits; fall back to snap_ts for rows whose block_time
-        // is 0 (a getblockheader miss) so they still age out instead of lingering.
-        $cut = time() - 2592000;
-        $db->prepare('DELETE FROM block_audit WHERE net = ? AND ((block_time > 0 AND block_time < ?) OR (block_time = 0 AND snap_ts > 0 AND snap_ts < ?))')
-           ->execute([$net['slug'], $cut, $cut]);
+        // Retain the audit RESULTS long-term - health / match / missing / added per block
+        // is a valuable series (block-health-over-time) and each row's counts + capped
+        // missing/added samples are tiny. We only strip the bulky ~4k-txid template_txids
+        // blob (API-only detail) from rows older than ~2 days.
+        $cut = time() - 172800;
+        // Bound the strip to a recent HEIGHT window so it rides the PK(net,height) index
+        // instead of full-scanning the table every run - rows below the floor were already
+        // stripped on earlier runs. The margin covers cron downtime.
+        $stripFloor = max(1, $tip - 20160);
+        $db->prepare("UPDATE block_audit SET template_txids = '[]' WHERE net = ? AND height >= ? AND template_txids != '[]' AND ((block_time > 0 AND block_time < ?) OR (block_time = 0 AND snap_ts > 0 AND snap_ts < ?))")
+           ->execute([$net['slug'], $stripFloor, $cut, $cut]);
         return $done;
     } catch (Throwable $e) {
         return 0;
@@ -286,5 +302,11 @@ function ts_audit_get(array $net, int $height): ?array
         'missing_txids' => json_decode($r['missing_txids'], true) ?: [],
         'added_txids'   => json_decode($r['added_txids'], true) ?: [],
         'match_pct'     => $mined > 0 ? (int) $r['matched'] / $mined * 100 : 0.0,
+        // Block health (mempool.space n/(n+r)): matched / (matched + missing).
+        'health_pct'      => ((int) $r['matched'] + (int) $r['missing']) > 0
+                              ? (int) $r['matched'] / ((int) $r['matched'] + (int) $r['missing']) * 100 : 100.0,
+        'expected_fees'   => (int) ($r['expected_fees'] ?? 0),
+        'expected_weight' => (int) ($r['expected_weight'] ?? 0),
+        'template_txids'  => json_decode($r['template_txids'] ?? '[]', true) ?: [],
     ];
 }

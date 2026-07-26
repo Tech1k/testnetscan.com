@@ -114,14 +114,17 @@ $audit = ts_audit_get($net, (int) $blk['height']);
 if ($audit !== null):
     $pct  = $audit['match_pct'];
     $pcls = $pct >= 90 ? 'ok' : ($pct >= 70 ? 'soft' : 'bad');
+    $health = (float) ($audit['health_pct'] ?? 100);   // n / (n + excluded) - mempool.space block health
+    $hcls = $health >= 99 ? 'ok' : ($health >= 90 ? 'soft' : ($health >= 75 ? 'warn' : 'bad'));
     $lead = ($audit['block_time'] > 0 && $audit['snap_ts'] > 0) ? $audit['block_time'] - $audit['snap_ts'] : null;
     $showMiss = array_slice($audit['missing_txids'], 0, 18);
     $showAdd  = array_slice($audit['added_txids'], 0, 18);
 ?>
 <div class="card">
-  <div class="card-h"><span><?= ts_icon('target') ?>Template audit</span> <span class="sub">projected vs mined</span></div>
+  <div class="card-h"><span><?= ts_icon('target') ?>Block health &amp; template audit</span> <span class="sub">projected vs mined</span></div>
   <div class="card-b">
     <div class="stat-grid">
+      <div class="stat"><div class="muted sub">Block health</div><div class="big-num sm"><span class="badge <?= $hcls ?>"><?= h(number_format($health, $health >= 99.95 ? 0 : 1)) ?>%</span></div><div class="muted sub">n / (n + excluded)</div></div>
       <div class="stat"><div class="muted sub">Match</div><div class="big-num sm"><span class="badge <?= $pcls ?>"><?= h(number_format($pct, 0)) ?>%</span></div><div class="muted sub"><?= commas($audit['matched']) ?> of <?= commas($audit['mined']) ?> mined</div></div>
       <div class="stat"><div class="muted sub">Predicted</div><div class="big-num sm"><?= commas($audit['expected']) ?></div><div class="muted sub">for the next block</div></div>
       <div class="stat"><div class="muted sub">Missing</div><div class="big-num sm neg"><?= commas($audit['missing']) ?></div><div class="muted sub">predicted, not mined</div></div>
@@ -137,7 +140,11 @@ if ($audit !== null):
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"><?php foreach ($showAdd as $t): ?><a class="badge soft mono" href="<?= h(ts_tx_href($net, $t)) ?>"><?= h(shorten($t)) ?></a><?php endforeach; ?><?php if ($audit['added'] > count($showAdd)): ?><span class="muted sub">+<?= commas($audit['added'] - count($showAdd)) ?> more</span><?php endif; ?></div>
     </div>
     <?php endif; ?>
-    <p class="pnote"><?= ts_icon('info') ?><span>Compared against the fee-ordered ~1 vMB template we predicted<?php if ($lead !== null && $lead > 0): ?> ~<?= h(ts_dur_short($lead)) ?> before this block was found<?php endif; ?>. <b>Missing</b> = transactions we expected that the miner left out (fee-bumped, evicted, or lower priority than modelled); <b>Added</b> = transactions mined that weren&rsquo;t in our prediction (they arrived after the snapshot, or were included out-of-band).</span></p>
+    <p class="pnote"><?= ts_icon('info') ?><span><b>Block health</b> = n / (n + excluded), the share of the high-fee transactions we predicted that the miner actually included. Compared against the fee-ordered ~1 vMB template we predicted<?php if ($lead !== null && $lead > 0): ?> ~<?= h(ts_dur_short($lead)) ?> before this block was found<?php endif; ?>. <b>Missing</b> = transactions we expected that the miner left out (fee-bumped, evicted, or lower priority than modelled); <b>Added</b> = transactions mined that weren&rsquo;t in our prediction (they arrived after the snapshot, or were included out-of-band).</span></p>
+    <details class="audit-more">
+      <summary>How match, missing &amp; added are counted</summary>
+      <div><b>Match</b> is the transactions in both our template and the block. <b>Missing</b> is high-fee transactions we predicted but the miner excluded, usually fee-bumped or evicted between our snapshot and the block. <b>Added</b> is transactions mined that weren&rsquo;t in our prediction; they arrived after the snapshot or were included out-of-band. A high match rate means our fee model tracked the miner&rsquo;s; a low one means the block diverged from the fee-ordered template.</div>
+    </details>
   </div>
 </div>
 <?php endif; ?>
@@ -231,6 +238,29 @@ if ($audit !== null):
   </div>
 </div>
 <?php endif; ?>
+
+<?php
+// Fee-shaded treemap of this page's transactions (sized by vsize), a visual companion to
+// the table. Scoped to the loaded page: a block can hold thousands of txs and fetching
+// them all per view is too costly, so the label names the page.
+if (count($txs) >= 2):
+    $tmItems = [];
+    foreach ($txs as $t) {
+        $wt = (int) ($t['weight'] ?? 0);
+        $vs = $wt > 0 ? $wt / 4 : (float) ($t['size'] ?? 0);
+        if ($vs <= 0) { continue; }
+        $fee = (int) ($t['fee'] ?? 0);
+        $tmItems[] = ['v' => $vs, 'rate' => $vs > 0 ? $fee / $vs : 0.0, 'txid' => $t['txid']];
+    }
+    if (count($tmItems) >= 2):
+?>
+<div class="card">
+  <div class="card-h"><span><?= ts_icon('layers') ?>Transaction map</span> <span class="sub">page <?= $page + 1 ?> / <?= max(1, $pages) ?> &middot; sized by vsize, shaded by fee rate</span></div>
+  <div class="card-b"><?= ts_block_treemap($tmItems, $base, 'Block ' . commas($bh) . ' transactions, page ' . ($page + 1)) ?>
+    <div class="tm-legend"><span class="muted sub">Fee rate</span><?php foreach ([1, 4, 10, 25, 50, 100] as $r): ?><span class="tm-key" style="background:<?= h(ts_feerate_color($r)) ?>"><?= $r . ($r === 100 ? '+' : '') ?></span><?php endforeach; ?><span class="muted sub">sat/vB</span></div>
+  </div>
+</div>
+<?php endif; endif; ?>
 
 <div class="card">
   <div class="card-h"><span><?= ts_icon('repeat') ?>Transactions</span> <span class="sub">page <?= $page + 1 ?> / <?= max(1, $pages) ?></span></div>

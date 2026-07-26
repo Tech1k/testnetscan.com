@@ -16,16 +16,16 @@ function ts_stats_db_path(): ?string
 
 function ts_stats_pdo(bool $create = false): ?PDO
 {
-    static $pdo = false;
-    if ($pdo !== false) {
+    static $pdo = null;
+    if ($pdo instanceof PDO) {
         return $pdo;
     }
     $path = ts_stats_db_path();
     if (!$path) {
-        return $pdo = null;
+        return null;
     }
     if (!$create && !is_file($path)) {
-        return $pdo = null;
+        return null;
     }
     try {
         if ($create) {
@@ -53,7 +53,7 @@ function ts_stats_pdo(bool $create = false): ?PDO
         }
         return $pdo = $db;
     } catch (Throwable $e) {
-        return $pdo = null;
+        return null;
     }
 }
 

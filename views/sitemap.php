@@ -17,6 +17,7 @@ foreach (ts_networks() as $n) {
     $urls[] = $u . '/mining';
     if (($n['kind'] ?? 'utxo') === 'utxo') {
         $urls[] = $u . '/charts';
+        $urls[] = $u . '/node';
     }
     $urls[] = $u . '/tools';
     if (ts_mweb_enabled($n)) {

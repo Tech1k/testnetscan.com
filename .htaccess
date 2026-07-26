@@ -7,13 +7,13 @@ DirectoryIndex index.php
 # Cap request bodies (defense-in-depth vs oversized-POST abuse). The broadcast /
 # decode / PSBT tools only ever POST a raw tx hex or PSBT, comfortably under 1 MiB.
 # Raise this if you need to broadcast unusually large transactions.
-LimitRequestBody 1048576
+LimitRequestBody 2097152
 
 # ---- block source / data / config ----------------------------------------
 RewriteEngine On
 
 # Internal directories and the live config must never be served directly.
-RewriteRule ^(lib|views|db|tools)(/|$) - [F]
+RewriteRule ^(lib|views|db|tools)(/|$) - [F,NC]
 RewriteRule ^config\.php$ - [F]
 
 # Dotfiles (.git, .htaccess, .gitignore, etc.) except ACME challenges.

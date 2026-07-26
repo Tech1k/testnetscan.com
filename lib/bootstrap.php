@@ -11,6 +11,14 @@ if (!defined('TS_ROOT')) {
     define('TS_ROOT', dirname(__DIR__));
 }
 
+// Satoshi amounts exceed 32-bit ints; a 32-bit PHP build would silently promote them to
+// float and lose precision. Fail fast + loud instead of corrupting money math.
+if (PHP_INT_SIZE < 8) {
+    http_response_code(500);
+    header('Content-Type: text/plain');
+    exit("TestnetScan requires a 64-bit PHP build (PHP_INT_SIZE >= 8).\n");
+}
+
 // ---- config ---------------------------------------------------------------
 
 $ts_config_file = TS_ROOT . '/config.php';
@@ -100,5 +108,8 @@ require_once __DIR__ . '/mwebscan.php';
 require_once __DIR__ . '/monero.php';
 require_once __DIR__ . '/stats.php';
 require_once __DIR__ . '/audit.php';
+require_once __DIR__ . '/blockindex.php';
+require_once __DIR__ . '/ws.php';
+require_once __DIR__ . '/api_v1.php';
 require_once __DIR__ . '/render.php';
 require_once __DIR__ . '/og.php';

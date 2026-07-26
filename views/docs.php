@@ -54,6 +54,24 @@ $groups = [
         ['GET', '/v1/statistics', 'Mempool + fee-rate history (snapshot store)'],
         ['GET', '/v1/mining/pools', 'Coinbase-tag pool distribution'],
         ['GET', '/v1/mining/hashrate', 'Estimated hashrate & difficulty series'],
+        ['GET', '/v1/mining/pool/:slug', 'Per-pool detail over a recent window'],
+        ['GET', '/v1/mining/reward-stats/:blockCount', 'Subsidy + fees + tx count over N blocks'],
+        ['GET', '/v1/mining/difficulty-adjustments/:interval', 'Retarget tuples (1m|3m|6m|1y|2y|3y|all)'],
+        ['GET', '/v1/cpfp/:txid', 'CPFP package: ancestors, descendants, effective fee rate'],
+        ['GET', '/v1/block/:hash/audit-summary', 'Template-vs-mined block health (match rate)'],
+        ['GET', '/v1/mining/blocks/fees/:period', 'Avg fees per block over :period (block-index history)'],
+        ['GET', '/v1/mining/blocks/rewards/:period', 'Avg reward per block over :period'],
+        ['GET', '/v1/mining/blocks/fee-rates/:period', 'Fee-rate percentiles per block over :period'],
+        ['GET', '/v1/mining/blocks/sizes-weights/:period', 'Avg size + weight per block over :period'],
+        ['GET', '/v1/mining/blocks/timestamp/:ts', 'Block nearest a unix timestamp'],
+        ['GET', '/v1/mining/hashrate/:period', 'Hashrate + difficulty series for a :period'],
+        ['GET', '/v1/mining/hashrate/pools/:period', 'Per-pool share + hashrate over :period'],
+        ['GET', '/v1/mining/pool/:slug/blocks[/:before]', 'Pool blocks, keyset-paged (10/page)'],
+        ['GET', '/v1/mining/pool/:slug/hashrate', 'Pool daily hashrate series'],
+        ['GET', '/v1/blocks[/:startHeight]', '15 extended blocks (reward/fees/pool), newest-first'],
+        ['GET', '/v1/blocks-bulk/:min/:max', 'Extended blocks for a height range (max 100)'],
+        ['GET', '/v1/backend-info', 'Instance descriptor (version, network, lightning flag)'],
+        ['GET', '/v1/transaction-times?txId[]=', 'First-seen unix time per txid'],
         ['GET', '/health', 'RPC + electrum reachability, tip height'],
     ],
     'MWEB (Litecoin only)' => [
@@ -89,7 +107,7 @@ $groupIcons = [
 <link rel="canonical" href="<?= h($base) ?>/docs">
 <?= ts_meta_social('API - TestnetScan', 'Drop-in Esplora / mempool.space compatible REST API for Bitcoin testnet4 and Litecoin testnet.', $base . '/docs') ?>
 
-<link rel="stylesheet" href="/assets/app.css?v=30">
+<link rel="stylesheet" href="/assets/app.css?v=34">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -205,6 +223,6 @@ if ($xmrNets):
 </div></div>
 </main>
 <?php ts_footer(); ?>
-<script src="/assets/app.js?v=13" defer></script>
+<script src="/assets/app.js?v=14" defer></script>
 </body>
 </html>

@@ -75,7 +75,7 @@ function ts_rpc_exec(array $rpc, string $payload, int $timeout): array
 }
 
 /** Single JSON-RPC call. Throws RpcException on transport or RPC error. */
-function ts_rpc(array $net, string $method, array $params = [])
+function ts_rpc(array $net, string $method, array $params = [], ?int $timeout = null)
 {
     $rpc = $net['rpc'];
     $payload = json_encode([
@@ -85,7 +85,7 @@ function ts_rpc(array $net, string $method, array $params = [])
         'params'  => $params,
     ], JSON_UNESCAPED_SLASHES);
 
-    list($http, $resp) = ts_rpc_exec($rpc, $payload, (int) ($rpc['timeout'] ?? 25));
+    list($http, $resp) = ts_rpc_exec($rpc, $payload, $timeout ?? (int) ($rpc['timeout'] ?? 25));
 
     if ($http === 401) {
         throw new RpcException('Core RPC auth failed (check rpcuser/rpcpassword).');
@@ -104,10 +104,10 @@ function ts_rpc(array $net, string $method, array $params = [])
 }
 
 /** Like ts_rpc but returns null instead of throwing on RPC error (not transport). */
-function ts_rpc_soft(array $net, string $method, array $params = [])
+function ts_rpc_soft(array $net, string $method, array $params = [], ?int $timeout = null)
 {
     try {
-        return ts_rpc($net, $method, $params);
+        return ts_rpc($net, $method, $params, $timeout);
     } catch (RpcException $e) {
         if ($e->rpcCode !== 0) {
             return null; // RPC-level (e.g. -5 not found): expected, return null

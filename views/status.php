@@ -56,7 +56,7 @@ $allUp = $rows ? array_reduce($rows, function ($c, $r) { return $c && $r['up']; 
 <link rel="canonical" href="<?= h($base) ?>/status">
 <meta name="robots" content="noindex">
 <?= ts_meta_social('Status - TestnetScan', 'Live backend health for every TestnetScan lane: node RPC, Electrum index, MWEB index and Monero daemon sync.', $base . '/status') ?>
-<link rel="stylesheet" href="/assets/app.css?v=30">
+<link rel="stylesheet" href="/assets/app.css?v=34">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -101,6 +101,6 @@ $allUp = $rows ? array_reduce($rows, function ($c, $r) { return $c && $r['up']; 
 <?php if (!$rows): ?><div class="card"><div class="card-b muted">No networks enabled.</div></div><?php endif; ?>
 </main>
 <?php ts_footer(); ?>
-<script src="/assets/app.js?v=13" defer></script>
+<script src="/assets/app.js?v=14" defer></script>
 </body>
 </html>

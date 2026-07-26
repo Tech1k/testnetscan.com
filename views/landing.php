@@ -57,7 +57,7 @@ $features = [
 <link rel="canonical" href="<?= h(ts_base_url()) ?>/">
 <?= ts_meta_social('TestnetScan - Bitcoin, Litecoin & Monero testnet explorer', 'Explore blocks, transactions, addresses, mempool and mining across Bitcoin testnet4, Litecoin testnet (with MWEB) and Monero testnet/stagenet. Open-source, self-hosted, no tracking.', ts_base_url() . '/') ?>
 
-<link rel="stylesheet" href="/assets/app.css?v=30">
+<link rel="stylesheet" href="/assets/app.css?v=34">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -125,6 +125,6 @@ $features = [
   </div>
 </main>
 <?php ts_footer(); ?>
-<script src="/assets/app.js?v=13" defer></script>
+<script src="/assets/app.js?v=14" defer></script>
 </body>
 </html>

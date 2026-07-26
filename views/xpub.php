@@ -55,8 +55,13 @@ $types = ['p2wpkh' => 'Native SegWit', 'p2sh' => 'Nested SegWit', 'p2pkh' => 'Le
 $qtype = isset($_GET['type']) && isset($types[$_GET['type']]) ? $_GET['type'] : null;
 $chosen = $qtype !== null ? $qtype : ($parsed['type'] === 'p2pkh' ? 'p2wpkh' : $parsed['type']);
 
-// Derive + look up balances (each address is an Electrum round-trip), cached.
-$data = cache_remember('xpub:' . $net['slug'] . ':' . $chosen . ':' . $xpub, 60, function () use ($net, $xpub, $chosen) {
+// Derive + look up balances (each address is an Electrum round-trip), cached. This is a
+// money tool: an electrs blip (ts_address_stats === null) must NOT be reported as a genuine
+// 0-balance wallet, and a false zero must never be cached. $failed (by ref) distinguishes an
+// unreachable index (null) from a truly empty address (array of zeros); on failure the
+// callback returns null so cache_remember stores nothing and the page degrades instead.
+$failed = false;
+$data = cache_remember('xpub:' . $net['slug'] . ':' . $chosen . ':' . $xpub, 60, function () use ($net, $xpub, $chosen, &$failed) {
     $d = ts_xpub_addresses($net, $xpub, 10, $chosen);
     if ($d === null) {
         return null;
@@ -67,14 +72,16 @@ $data = cache_remember('xpub:' . $net['slug'] . ':' . $chosen . ':' . $xpub, 60,
             $ab = 0; $at = 0;
             try {
                 $st = ts_address_stats($net, $a['address']);
-                if ($st) {
+                if ($st === null) {
+                    $failed = true;   // electrs unavailable (null) != a genuinely empty address (0)
+                } elseif ($st) {
                     $c = $st['chain_stats']; $m = $st['mempool_stats'];
                     $ab = ((int) $c['funded_txo_sum'] - (int) $c['spent_txo_sum'])
                         + ((int) $m['funded_txo_sum'] - (int) $m['spent_txo_sum']);
                     $at = (int) $c['tx_count'] + (int) $m['tx_count'];
                 }
             } catch (Throwable $e) {
-                // best-effort per address
+                $failed = true;
             }
             $d[$ch][$k]['balance'] = $ab;
             $d[$ch][$k]['txs'] = $at;
@@ -82,13 +89,25 @@ $data = cache_remember('xpub:' . $net['slug'] . ':' . $chosen . ':' . $xpub, 60,
             if ($at > 0) { $used++; }
         }
     }
+    if ($failed) {
+        return null;   // don't cache a false "empty wallet" - retry on the next request
+    }
     $d['total_balance'] = $bal; $d['total_tx'] = $tx; $d['used'] = $used;
     return $d;
 });
 
 if ($data === null) {
+    // A transient index failure ($failed) is degraded, never shown as a real 0 balance.
+    if ($failed && !headers_sent()) {
+        http_response_code(503);
+        header('Retry-After: 30');
+        header('Cache-Control: no-store');
+    }
     ts_head($net, ['title' => 'Extended key - ' . $net['label']]);
-    echo '<h1>Extended public key</h1><div class="card"><div class="card-b"><p class="muted">Could not derive addresses from this key.</p></div></div>';
+    $msg = $failed
+        ? 'Balances are temporarily unavailable (the address index did not respond). Please try again shortly.'
+        : 'Could not derive addresses from this key.';
+    echo '<h1>Extended public key</h1><div class="card"><div class="card-b"><p class="muted">' . h($msg) . '</p></div></div>';
     ts_foot($net);
     return;
 }

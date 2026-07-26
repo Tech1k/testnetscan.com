@@ -8,9 +8,24 @@ $type = ts_address_type($net, $addr);
 $sh = ts_scripthash($net, $addr);
 $stats = ts_address_stats($net, $addr);
 if ($stats === null) {
-    http_response_code(404);
-    $GLOBALS['search_query'] = $addr;
-    require __DIR__ . '/notfound.php';
+    // $sh is non-null only for an address valid on THIS lane. A valid address with null
+    // stats means the index is unreachable / resyncing - degrade (503), NEVER a false 0
+    // balance. An invalid address is a genuine 404.
+    if ($sh === null) {
+        http_response_code(404);
+        $GLOBALS['search_query'] = $addr;
+        require __DIR__ . '/notfound.php';
+        return;
+    }
+    http_response_code(503);
+    if (!headers_sent()) { header('Retry-After: 30'); header('Cache-Control: no-store'); }
+    ts_head($net, ['title' => 'Address - ' . $net['label']]);
+    echo '<h1>Address</h1><div class="card"><div class="card-b">'
+       . '<div class="break mono addr-lg">' . h($addr) . '</div>'
+       . '<div class="empty mt-3">' . ts_icon('clock')
+       . '<span>The address index is temporarily unavailable. The Electrum / electrs server is unreachable or resyncing, so balance and history aren&rsquo;t available right now. Please try again shortly.</span>'
+       . '</div></div></div>';
+    ts_foot($net);
     return;
 }
 

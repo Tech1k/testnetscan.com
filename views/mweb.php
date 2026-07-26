@@ -119,11 +119,11 @@ ts_head($net, ['title' => 'MWEB - ' . $net['label'] . ' - TestnetScan']);
 </div>
 <?php endif; ?>
 
-<div class="card">
+<div class="card" id="pegcheck">
   <div class="card-h"><span><?= ts_icon('eye-off') ?>Peg-out privacy check</span> <span class="sub">anonymity-set lookup</span></div>
   <div class="card-b">
     <p class="muted sub">How well does a peg-out amount blend in? A common, round amount hides in a larger anonymity set; an exact or unusual amount is easier to link back to its peg-in.</p>
-    <form method="get" action="<?= h($base) ?>/mweb">
+    <form method="get" action="<?= h($base) ?>/mweb#pegcheck">
       <div class="row">
         <input type="text" name="privacy_amount" inputmode="decimal" placeholder="amount in <?= h($net['unit']) ?> (e.g. 1.5)" value="<?= h($mwPrivAmt) ?>" style="max-width:240px" spellcheck="false" autocomplete="off">
         <button class="btn" type="submit">Check</button>
@@ -252,27 +252,42 @@ ts_head($net, ['title' => 'MWEB - ' . $net['label'] . ' - TestnetScan']);
 <?php endif; ?>
 
 <?php
-    // Daily peg-flow: peg-in above the centre line, peg-out below (index only).
+    // Peg-flow: peg-in above the centre line, peg-out below (index only). Daily is too dense to
+    // read over a long range (~730 points collapse to a sub-pixel band), so bucket to weekly
+    // totals once the series is large; short ranges stay daily.
+    $weekly = count($series) > 120;
+    $flow = $series;
+    if ($weekly) {
+        $buckets = [];
+        foreach ($series as $p) {
+            $wk = intdiv((int) $p['day_ts'], 604800);
+            if (!isset($buckets[$wk])) { $buckets[$wk] = ['day_ts' => 0, 'pegin_sat' => 0, 'pegout_sat' => 0]; }
+            $buckets[$wk]['day_ts']      = (int) $p['day_ts'];   // last day seen in the week = the bar's date
+            $buckets[$wk]['pegin_sat']  += (int) $p['pegin_sat'];
+            $buckets[$wk]['pegout_sat'] += (int) $p['pegout_sat'];
+        }
+        $flow = array_values($buckets);
+    }
     $hasFlow = false;
     $pegLabels = [];
     $pegTips = [];
-    foreach ($series as $p) {
+    foreach ($flow as $p) {
         $pin = (int) $p['pegin_sat']; $pout = (int) $p['pegout_sat'];
         if ($pin > 0 || $pout > 0) { $hasFlow = true; }
         $pegLabels[] = gmdate('Y-m-d', (int) $p['day_ts']) . ' · +' . ts_coin($pin) . ' / -' . ts_coin($pout);
-        $pegTips[] = ts_tip_json(gmdate('M j, Y', (int) $p['day_ts']), [
+        $pegTips[] = ts_tip_json(($weekly ? 'Week ending ' : '') . gmdate('M j, Y', (int) $p['day_ts']), [
             ['c' => 'var(--ok)',  'k' => 'Peg-in',  'v' => ts_amount($net, $pin)],
             ['c' => 'var(--bad)', 'k' => 'Peg-out', 'v' => ts_amount($net, $pout)],
         ]);
     }
-    if ($idx && count($series) >= 2 && $hasFlow):
+    if ($idx && count($flow) >= 2 && $hasFlow):
 ?>
 <div class="card">
-  <div class="card-h"><span><?= ts_icon('repeat') ?>Peg flow</span> <span class="sub">daily peg-in vs peg-out</span></div>
+  <div class="card-h"><span><?= ts_icon('repeat') ?>Peg flow</span> <span class="sub"><?= $weekly ? 'weekly' : 'daily' ?> peg-in vs peg-out</span></div>
   <div class="card-b">
-    <?= ts_chart_diverging($series, 'pegin_sat', 'pegout_sat', 'Daily MWEB peg-in above centre, peg-out below', $pegLabels, [
+    <?= ts_chart_diverging($flow, 'pegin_sat', 'pegout_sat', ($weekly ? 'Weekly' : 'Daily') . ' MWEB peg-in above centre, peg-out below', $pegLabels, [
         'yfmt'   => $mwSupplyFmt,
-        'xticks' => ts_time_ticks($series, 'day_ts'),
+        'xticks' => ts_time_ticks($flow, 'day_ts'),
         'tips'   => $pegTips,
         'legend' => [
             ['color' => 'var(--ok)',  'label' => 'Peg-in'],

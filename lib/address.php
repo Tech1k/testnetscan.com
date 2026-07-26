@@ -274,8 +274,9 @@ function ts_address_type(array $net, string $address): string
         }
     }
     if (!empty($net['mweb_hrp'])) {
-        $dec = ts_bech32_decode($address);
-        if ($dec !== null && $dec[0] === $net['mweb_hrp']) {
+        // MWEB stealth addresses (ltcmweb1...) encode two pubkeys and exceed the bech32
+        // length cap, so a strict decoder rejects them - match the hrp prefix directly.
+        if (stripos($address, $net['mweb_hrp'] . '1') === 0) {
             return 'mweb';
         }
     }

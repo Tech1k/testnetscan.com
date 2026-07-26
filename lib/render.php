@@ -167,7 +167,7 @@ function ts_head(array $net, array $opt = []): void
         'query-input' => 'required name=query',
     ],
 ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
-<link rel="stylesheet" href="/assets/app.css?v=30">
+<link rel="stylesheet" href="/assets/app.css?v=34">
 </head>
 <body style="--brand:<?= h(ts_brand_color(isset($net['coin']) ? $net['coin'] : '')) ?>">
 <a class="skip-link" href="#main">Skip to content</a>
@@ -210,7 +210,7 @@ function ts_footer(): void
     <a class="ext" href="https://testnetwallet.net" target="_blank" rel="noopener">Wallet</a>
     <a class="ext" href="https://cypherfaucet.com" target="_blank" rel="noopener">Faucet</a>
     <a class="ext" href="https://testnetpool.com" target="_blank" rel="noopener">Pool</a>
-    <a class="ext" href="https://cyphertoshi.com" target="_blank" rel="noopener">Guides</a>
+    <a class="ext" href="https://testnethub.com" target="_blank" rel="noopener">Guides</a>
     <a href="/donate">Donate</a>
     <a href="/status">Status</a>
     <a href="/docs">API</a>
@@ -230,7 +230,7 @@ function ts_foot(array $net, array $opt = []): void
 </main>
 <?php ts_footer(); ?>
 <?php if (!empty($opt['qr'])): ?><script src="/assets/qrcode.js?v=1" defer></script><?php endif; ?>
-<script src="/assets/app.js?v=13" defer></script>
+<script src="/assets/app.js?v=14" defer></script>
 </body>
 </html>
 <?php
@@ -630,8 +630,12 @@ function ts_chart_diverging(array $rows, string $upKey, string $downKey, string 
         if ($p > 0) { $scaleMax = $p; }
     }
     $W = 100.0; $H = 40.0; $mid = $H / 2;
-    $gap = $n > 50 ? 0.15 : 0.4;
-    $bw  = ($W - ($n - 1) * $gap) / $n;
+    // $bw = ($W - ($n-1)*$gap)/$n goes NEGATIVE once ($n-1)*$gap exceeds the 100-unit
+    // viewBox (a few hundred bars), hiding every bar. Slot-based sizing keeps $bw > 0;
+    // $bw + $gap == $slot so the $x += $bw + $gap advance below stays correct.
+    $slot = $W / $n;
+    $gap  = min($n > 50 ? 0.15 : 0.4, $slot * 0.35);
+    $bw   = $slot - $gap;
     $svg = '<svg class="ts-diverge" viewBox="0 0 ' . $W . ' ' . $H
          . '" preserveAspectRatio="none" role="img" aria-label="' . h($label) . '"' . ($opts ? ' tabindex="0"' : '') . '>';
     $svg .= '<line class="ts-mid" x1="0" y1="' . $mid . '" x2="' . $W . '" y2="' . $mid . '"/>';
@@ -929,4 +933,215 @@ function ts_spk_label(string $type): string
         return 'Witness v' . $mm[1];
     }
     return strtoupper($type);
+}
+
+/** Worst (largest) aspect ratio in a squarified treemap row of areas laid along $side. */
+function ts_tm_worst(array $areas, float $side): float
+{
+    $sum = array_sum($areas);
+    if ($sum <= 0 || $side <= 0) { return INF; }
+    $s2 = $sum * $sum; $w2 = $side * $side;
+    return max($w2 * max($areas) / $s2, $s2 / ($w2 * min($areas)));
+}
+
+/**
+ * Squarified treemap layout (Bruls–Huizing–van Wijk): pack $items (each with a positive
+ * 'v') into $w x $h so cell area is proportional to value while keeping cells as close to square as possible -
+ * far more legible than a naive binary split, which degenerates into thin slabs. Rows are
+ * grown along the shorter side until adding another cell would worsen the aspect ratio.
+ * Appends ['x','y','w','h','it'].
+ */
+function ts_treemap_squarify(array $items, float $x, float $y, float $w, float $h, array &$cells): void
+{
+    $total = 0.0;
+    foreach ($items as $it) { $total += (float) $it['v']; }
+    if ($total <= 0 || $w <= 0 || $h <= 0) { return; }
+    $scale = ($w * $h) / $total;                       // value -> area
+    $q = [];
+    foreach ($items as $it) { $q[] = ['a' => (float) $it['v'] * $scale, 'it' => $it]; }
+
+    $i = 0; $n = count($q);
+    while ($i < $n && $w > 0.001 && $h > 0.001) {
+        $side = min($w, $h);
+        $rowA = [$q[$i]['a']]; $rowI = [$q[$i]]; $j = $i + 1;
+        while ($j < $n) {
+            $cand = $rowA; $cand[] = $q[$j]['a'];
+            if (ts_tm_worst($cand, $side) > ts_tm_worst($rowA, $side)) { break; }   // adding it makes cells worse
+            $rowA = $cand; $rowI[] = $q[$j]; $j++;
+        }
+        $sum = array_sum($rowA);
+        $thick = $sum / $side;                          // strip depth perpendicular to $side
+        if ($thick <= 0) { break; }
+        if ($w >= $h) {                                 // vertical strip of width $thick, full height
+            $oy = $y;
+            foreach ($rowI as $r) { $ch = $r['a'] / $thick; $cells[] = ['x' => $x, 'y' => $oy, 'w' => $thick, 'h' => $ch, 'it' => $r['it']]; $oy += $ch; }
+            $x += $thick; $w -= $thick;
+        } else {                                        // horizontal strip of height $thick, full width
+            $ox = $x;
+            foreach ($rowI as $r) { $cw = $r['a'] / $thick; $cells[] = ['x' => $ox, 'y' => $y, 'w' => $cw, 'h' => $thick, 'it' => $r['it']]; $ox += $cw; }
+            $y += $thick; $h -= $thick;
+        }
+        $i = $j;
+    }
+}
+
+/**
+ * Block transaction treemap (mempool.space-style): each tx is a rectangle sized by vsize
+ * and shaded by fee rate, linking to the tx. $items: [['v'=>vsize,'rate'=>satvb,'txid'=>..]].
+ * $base is the network URL prefix for the tx links.
+ */
+function ts_block_treemap(array $items, string $base, string $label = 'Block transactions'): string
+{
+    $items = array_values(array_filter($items, function ($i) { return (float) ($i['v'] ?? 0) > 0; }));
+    if (!$items) {
+        return '';
+    }
+    usort($items, function ($a, $b) { return (float) $b['v'] <=> (float) $a['v']; });
+    $items = array_slice($items, 0, 400);
+    // Lay out in a wide-short box whose aspect ratio the CSS mirrors, so
+    // preserveAspectRatio="none" doesn't distort - cells stay square-ish on screen.
+    $cells = [];
+    ts_treemap_squarify($items, 0, 0, 100, 28, $cells);
+    $svg = '<svg class="ts-treemap" viewBox="0 0 100 28" preserveAspectRatio="none" role="img" aria-label="' . h($label) . '">';
+    foreach ($cells as $c) {
+        $it   = $c['it'];
+        $rate = isset($it['rate']) ? (float) $it['rate'] : null;
+        $col  = $rate !== null ? ts_feerate_color($rate) : 'var(--accent)';
+        $tid  = (string) ($it['txid'] ?? '');
+        $ttl  = ($tid !== '' ? shorten($tid, 10, 6) : 'transaction') . ' · ' . ts_size_str((int) $it['v'], 'vB')
+              . ($rate !== null ? ' · ' . number_format($rate, 1) . ' sat/vB' : '');
+        $rect = '<rect x="' . round($c['x'], 2) . '" y="' . round($c['y'], 2) . '" width="' . round($c['w'], 2)
+              . '" height="' . round($c['h'], 2) . '" fill="' . h($col) . '"><title>' . h($ttl) . '</title></rect>';
+        // Fee-rate label on cells with room (uniform scaling keeps the text crisp).
+        if ($rate !== null && $c['w'] >= 7.0 && $c['h'] >= 3.4) {
+            $rlbl = $rate >= 10 ? number_format($rate, 0) : number_format($rate, 1);
+            $rect .= '<text class="ts-treemap-lbl" x="' . round($c['x'] + $c['w'] / 2, 2) . '" y="' . round($c['y'] + $c['h'] / 2, 2) . '">' . h($rlbl) . '</text>';
+        }
+        $svg .= $tid !== '' ? '<a href="' . h($base) . '/tx/' . h($tid) . '">' . $rect . '</a>' : $rect;
+    }
+    return $svg . '</svg>';
+}
+
+/**
+ * Transaction value-flow (Sankey-style): inputs on the left narrow through a waist to outputs
+ * + a fee sliver on the right. Inputs link back to their source tx and outputs forward to their
+ * spending tx (from $outspends) so a click walks the chain. Beyond 12 segments collapse to
+ * "N more"; coinbase / unresolved inputs render as one full-value ribbon. Multi-chain links
+ * via ts_u($net). Native <title> tooltips (no JS).
+ */
+function ts_tx_flow(array $net, array $tx, array $outspends = []): string
+{
+    $H = 48.0; $pad = 3.0; $barH = $H - 2 * $pad;
+    $isCb = !empty($tx['vin'][0]['is_coinbase']);
+    $base = ts_u($net);
+
+    // Each input carries its source tx (vin.txid) so a click walks backward one hop.
+    $ins = []; $inSum = 0; $inKnown = true;
+    foreach (($tx['vin'] ?? []) as $in) {
+        if ($isCb) { continue; }
+        $v = isset($in['prevout']['value']) ? (int) $in['prevout']['value'] : null;
+        if ($v === null) { $inKnown = false; $v = 0; }
+        $ins[] = ['v' => $v, 'label' => $in['prevout']['scriptpubkey_address'] ?? 'input',
+                  'href' => isset($in['txid']) ? $base . '/tx/' . $in['txid'] : null];
+        $inSum += $v;
+    }
+    // Each output links to its spending tx (from resolved outspends) so a click walks forward.
+    $outs = []; $outSum = 0;
+    foreach (($tx['vout'] ?? []) as $i => $vo) {
+        $val = (int) ($vo['value'] ?? 0);
+        $sp  = $outspends[$i] ?? null;
+        $outs[] = ['v' => $val, 'label' => $vo['scriptpubkey_address'] ?? ts_spk_label($vo['scriptpubkey_type'] ?? ''),
+                   'href' => (is_array($sp) && !empty($sp['spent']) && !empty($sp['txid'])) ? $base . '/tx/' . $sp['txid'] : null];
+        $outSum += $val;
+    }
+    $fee = (int) ($tx['fee'] ?? 0);
+    $collapse = function (array $segs, string $noun) {   // keep the 12 biggest, pool the rest (unlinked)
+        usort($segs, function ($a, $b) { return $b['v'] <=> $a['v']; });
+        if (count($segs) > 13) {
+            $keep = array_slice($segs, 0, 12);
+            $other = 0; foreach (array_slice($segs, 12) as $s) { $other += $s['v']; }
+            $keep[] = ['v' => $other, 'label' => (count($segs) - 12) . ' more ' . $noun, 'href' => null];
+            return $keep;
+        }
+        return $segs;
+    };
+    $outs = $collapse($outs, 'outputs');
+    // Coinbase or unresolved input values collapse to one full-value input ribbon.
+    if ($isCb || !$inKnown || !$ins) {
+        $ins = [['v' => max(1, $outSum + $fee), 'label' => $isCb ? 'Coinbase (newly minted)' : 'inputs (values unknown)', 'href' => null]];
+        $inSum = $outSum + $fee;
+    } else {
+        $ins = $collapse($ins, 'inputs');
+    }
+    $rights = $outs;                                     // right side = outputs then the fee sliver
+    if ($fee > 0) { $rights[] = ['v' => $fee, 'label' => 'fee', 'fee' => true, 'href' => null]; }
+
+    $capL0 = 2.0; $bandL = 12.0; $cx = 50.0; $bandR = 88.0; $capR1 = 98.0;
+    $y0 = $pad; $waistH = $barH * 0.68; $wTop = $pad + ($barH - $waistH) / 2.0;
+    $BLUE = 'url(#ts-flow-grad)'; $AMBER = '#e0a33a';
+    $unit = $net['unit'];
+
+    // Vertical fraction per segment WITH a floor, so a tiny output still gets a visible,
+    // clickable band instead of a sub-pixel sliver. Fractions sum to 1 and are shared by the
+    // full-height and waist stacks so the ribbons don't twist. Tooltip shows the true value.
+    $fracs = function (array $segs) {
+        $n = count($segs);
+        if ($n === 0) { return []; }
+        $minF = min(0.04, 0.6 / $n);
+        $flex = 1.0 - $minF * $n;
+        $total = 0.0; foreach ($segs as $s) { $total += (float) $s['v']; }
+        $out = [];
+        foreach ($segs as $s) { $out[] = $minF + ($total > 0 ? (float) $s['v'] / $total * $flex : $flex / $n); }
+        return $out;
+    };
+    $place = function (array $fr, float $top, float $region) {
+        $pos = []; $y = $top;
+        foreach ($fr as $f) { $hh = $f * $region; $pos[] = [$y, $hh]; $y += $hh; }
+        return $pos;
+    };
+    $inF = $fracs($ins); $outF = $fracs($rights);
+    $inL = $place($inF, $y0, $barH);   $inW = $place($inF, $wTop, $waistH);   // inputs: caps + centre side
+    $outR = $place($outF, $y0, $barH); $outW = $place($outF, $wTop, $waistH); // outputs: caps + centre side
+
+    $ttl  = function (array $s) use ($unit) { return (!empty($s['fee']) ? 'Fee' : (string) $s['label']) . ' · ' . ts_coin((int) $s['v']) . ' ' . $unit; };
+    $wrap = function (string $shape, ?string $href) { return $href !== null ? '<a href="' . h($href) . '">' . $shape . '</a>' : $shape; };
+
+    $svg = '<svg class="ts-flow" viewBox="0 0 100 ' . $H . '" preserveAspectRatio="none" role="img" aria-label="Transaction value flow">';
+    // Fixed x-positioned gradient: darkest at the outer tips, brightest through the centre.
+    $svg .= '<defs><linearGradient id="ts-flow-grad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="100" y2="0">'
+          . '<stop offset="0" stop-color="#0c3a5f"/><stop offset="0.22" stop-color="#1c7fd6"/>'
+          . '<stop offset="0.5" stop-color="#2ba4fa"/><stop offset="0.8" stop-color="#2189e2"/>'
+          . '<stop offset="1" stop-color="#155f9f"/></linearGradient></defs>';
+
+    $ribbon = function (float $x0, float $la, float $lb, float $x1, float $ra, float $rb, string $fill, array $s) use (&$svg, $ttl, $wrap) {
+        $mx = ($x0 + $x1) / 2.0;                         // S-curve control at the midpoint
+        $p = '<path class="ts-flow-ribbon" fill="' . $fill . '" d="M' . round($x0, 2) . ',' . round($la, 2)
+              . ' C' . round($mx, 2) . ',' . round($la, 2) . ' ' . round($mx, 2) . ',' . round($ra, 2) . ' ' . round($x1, 2) . ',' . round($ra, 2)
+              . ' L' . round($x1, 2) . ',' . round($rb, 2)
+              . ' C' . round($mx, 2) . ',' . round($rb, 2) . ' ' . round($mx, 2) . ',' . round($lb, 2) . ' ' . round($x0, 2) . ',' . round($lb, 2)
+              . ' Z"><title>' . h($ttl($s)) . '</title></path>';
+        $svg .= $wrap($p, $s['href'] ?? null);
+    };
+    foreach ($ins as $k => $s) {                         // inputs -> centre
+        list($lt, $lh) = $inL[$k]; list($wt, $wh) = $inW[$k];
+        $ribbon($bandL, $lt, $lt + $lh, $cx, $wt, $wt + $wh, $BLUE, $s);
+    }
+    foreach ($rights as $k => $s) {                      // centre -> outputs + fee
+        list($wt, $wh) = $outW[$k]; list($rt, $rh) = $outR[$k];
+        $ribbon($cx, $wt, $wt + $wh, $bandR, $rt, $rt + $rh, empty($s['fee']) ? $BLUE : $AMBER, $s);
+    }
+    $cap = function (string $pts, string $fill, array $s) use (&$svg, $ttl, $wrap) {
+        $svg .= $wrap('<polygon class="ts-flow-cap" points="' . $pts . '" fill="' . $fill . '"><title>' . h($ttl($s)) . '</title></polygon>', $s['href'] ?? null);
+    };
+    foreach ($ins as $k => $s) {                         // input chevron caps (point right)
+        list($top, $hh) = $inL[$k]; $mid = $top + $hh / 2.0;
+        $cap(round($capL0, 2) . ',' . round($top, 2) . ' ' . round($bandL - 2, 2) . ',' . round($top, 2) . ' ' . round($bandL, 2) . ',' . round($mid, 2)
+           . ' ' . round($bandL - 2, 2) . ',' . round($top + $hh, 2) . ' ' . round($capL0, 2) . ',' . round($top + $hh, 2) . ' ' . round($capL0 + 2, 2) . ',' . round($mid, 2), $BLUE, $s);
+    }
+    foreach ($rights as $k => $s) {                      // output pennant caps (arrowhead)
+        list($top, $hh) = $outR[$k]; $mid = $top + $hh / 2.0;
+        $cap(round($bandR, 2) . ',' . round($top, 2) . ' ' . round($capR1 - 3, 2) . ',' . round($top, 2) . ' ' . round($capR1, 2) . ',' . round($mid, 2)
+           . ' ' . round($capR1 - 3, 2) . ',' . round($top + $hh, 2) . ' ' . round($bandR, 2) . ',' . round($top + $hh, 2), empty($s['fee']) ? $BLUE : $AMBER, $s);
+    }
+    return $svg . '</svg>';
 }

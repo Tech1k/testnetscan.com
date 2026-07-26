@@ -830,8 +830,73 @@ function ts_route_api(array $net, array $r, string $method): void
             if (($r[1] ?? '') === 'mining' && ($r[2] ?? '') === 'pools') {
                 json_out(ts_mining_pools_api($net), 200, 120);
             }
+            if (($r[1] ?? '') === 'mining' && ($r[2] ?? '') === 'hashrate' && ($r[3] ?? '') === 'pools') {
+                $period = ts_period_valid($r[4] ?? '') ? $r[4] : '1w';
+                json_out(ts_mining_hashrate_pools_api($net, $period), 200, 300);
+            }
             if (($r[1] ?? '') === 'mining' && ($r[2] ?? '') === 'hashrate') {
-                json_out(ts_mining_hashrate_api($net), 200, 120);
+                $period = ts_period_valid($r[3] ?? '') ? $r[3] : '';
+                json_out(ts_mining_hashrate_api($net, $period), 200, 120);
+            }
+            // Extension endpoints reusing existing data (see lib/api_v1.php).
+            // Per-pool sub-routes (blocks / hashrate) MUST precede the bare pool arm.
+            if (($r[1] ?? '') === 'mining' && ($r[2] ?? '') === 'pool' && ($r[4] ?? '') === 'blocks') {
+                if (($r[3] ?? '') === '') { api_error('Not found', 404); }
+                $before = isset($r[5]) && ctype_digit((string) $r[5]) ? (int) $r[5] : null;
+                json_out(ts_mining_pool_blocks_api($net, $r[3], $before), 200, 120);
+            }
+            if (($r[1] ?? '') === 'mining' && ($r[2] ?? '') === 'pool' && ($r[4] ?? '') === 'hashrate') {
+                if (($r[3] ?? '') === '') { api_error('Not found', 404); }
+                json_out(ts_mining_pool_hashrate_api($net, $r[3]), 200, 300);
+            }
+            if (($r[1] ?? '') === 'mining' && ($r[2] ?? '') === 'pool') {
+                if (($r[3] ?? '') === '') { api_error('Not found', 404); }
+                $mp = ts_mining_pool_api($net, $r[3]);
+                $mp ? json_out($mp, 200, 120) : api_error('Not found', 404);
+            }
+            if (($r[1] ?? '') === 'mining' && ($r[2] ?? '') === 'reward-stats') {
+                json_out(ts_reward_stats_api($net, (int) ($r[3] ?? 144)), 200, 120);
+            }
+            if (($r[1] ?? '') === 'mining' && ($r[2] ?? '') === 'difficulty-adjustments') {
+                json_out(ts_difficulty_adjustments_api($net, (string) ($r[3] ?? '1y')), 200, 1800);
+            }
+            if (($r[1] ?? '') === 'cpfp') {
+                if (!is_txid($r[2] ?? '')) { api_error('Invalid txid', 400); }
+                if (!ts_rate_limit('cpfp', 60, 60)) { api_error('rate limited', 429); }   // up to ~51 uncached mempool lookups for a live tx
+                json_out(ts_cpfp_api($net, $r[2]), 200, 5);
+            }
+            if (($r[1] ?? '') === 'block' && ($r[3] ?? '') === 'audit-summary') {
+                if (!is_txid($r[2] ?? '')) { api_error('Invalid block hash', 400); }
+                $as = ts_audit_summary_api($net, $r[2]);
+                $as ? json_out($as, 200, 600) : api_error('Not found', 404);
+            }
+            // Historical mining timeseries (block-index backed); empty until the cron fills it.
+            if (($r[1] ?? '') === 'mining' && ($r[2] ?? '') === 'blocks') {
+                $sub = $r[3] ?? '';
+                if ($sub === 'timestamp') {
+                    $bt = ((int) ($r[4] ?? 0)) > 0 ? ts_block_by_timestamp_api($net, (int) $r[4]) : null;
+                    $bt ? json_out($bt, 200, 60) : api_error('Not found', 404);
+                }
+                $period = ts_period_valid($r[4] ?? '') ? $r[4] : '1w';
+                if ($sub === 'fees') { json_out(ts_mining_blocks_fees_api($net, $period), 200, 600); }
+                if ($sub === 'rewards') { json_out(ts_mining_blocks_rewards_api($net, $period), 200, 600); }
+                if ($sub === 'fee-rates') { json_out(ts_mining_blocks_feerates_api($net, $period), 200, 600); }
+                if ($sub === 'sizes-weights') { json_out(ts_mining_blocks_sizesweights_api($net, $period), 200, 600); }
+                api_error('Not found', 404);
+            }
+            if (($r[1] ?? '') === 'blocks-bulk') {
+                json_out(ts_blocks_bulk_api($net, (int) ($r[2] ?? 0), (int) ($r[3] ?? 0)), 200, 60);
+            }
+            if (($r[1] ?? '') === 'blocks') {
+                $start = isset($r[2]) && ctype_digit((string) $r[2]) ? (int) $r[2] : null;
+                json_out(ts_blocks_extended_api($net, $start), 200, 60);
+            }
+            if (($r[1] ?? '') === 'backend-info') {
+                json_out(ts_backend_info_api($net), 200, 60);
+            }
+            if (($r[1] ?? '') === 'transaction-times') {
+                if (!ts_rate_limit('txtimes_batch', 30, 60)) { api_error('rate limited', 429); }   // up to ~50 uncached lookups/request
+                json_out(ts_transaction_times_api($net), 200, 5);
             }
             api_error('Not found', 404);
 

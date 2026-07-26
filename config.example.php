@@ -27,10 +27,28 @@ return [
     // Kept under db/ which .htaccess denies. Created automatically.
     'cache_db' => __DIR__ . '/db/cache.sqlite',
 
+    // Rolling per-block economics index (lib/blockindex.php) that backs the
+    // long-range /charts?period= history + /api/v1/mining/blocks/* timeseries.
+    // Lives beside cache_db as blockindex.sqlite; filled by tools/snapshot.php.
+    // 'retain' = how many recent blocks to keep (default ~90d @ 2.5m spacing);
+    // 'per_run' = max blocks indexed per cron run (bounds the heaviest step).
+    'blockindex_retain'  => 52560,
+    'blockindex_per_run' => 150,
+
+    // /api/v1/backend-info descriptor (wallets probe this; host comes from
+    // 'canonical_host' defined below). Cosmetic.
+    'version'        => '1.0.0',
+    'git_commit'     => '',
+
     // CORS: the wallet/drop-in clients call the /api from the browser, so the
     // API must answer with Access-Control-Allow-Origin. '*' is appropriate for
     // a public testnet explorer; narrow it to your origins if you prefer.
     'cors_origin' => '*',
+
+    // Trust CF-Connecting-IP for per-IP rate limiting. Keep true when the origin
+    // only accepts Cloudflare traffic (DEPLOY.md); set false for a direct-exposed
+    // origin so a spoofed header can't reset another caller's rate-limit bucket.
+    'trust_cf_ip' => true,
 
     // Show cross-links to external explorers (mempool.space / litecoinspace) on
     // tx/block pages. Off by default; flip on for the "view elsewhere"
@@ -47,6 +65,10 @@ return [
     // breakdown is approximate). Keeps busy/faucet addresses fast and defuses
     // walk-amplification abuse.
     'address_walk_limit' => 500,
+
+    // Max outputs to resolve spend-status for on a tx page (the /tx outspends walk).
+    // Bounds per-request electrs work on very large transactions.
+    'outspend_walk_limit' => 200,
 
     // Canonical host for absolute URLs (OG tags, sitemap), and the fallback for
     // an untrusted Host header.

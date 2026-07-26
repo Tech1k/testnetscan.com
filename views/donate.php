@@ -37,7 +37,7 @@ $coins = [
 <link rel="canonical" href="<?= h($base) ?>/donate">
 <?= ts_meta_social('Donate - TestnetScan', 'Support TestnetScan, a free, open-source Bitcoin, Litecoin (with MWEB) and Monero testnet explorer. Donate via OpenAlias, BTC, LTC or XMR.', $base . '/donate') ?>
 
-<link rel="stylesheet" href="/assets/app.css?v=30">
+<link rel="stylesheet" href="/assets/app.css?v=34">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -105,6 +105,6 @@ $coins = [
 </main>
 <?php ts_footer(); ?>
 <script src="/assets/qrcode.js?v=1" defer></script>
-<script src="/assets/app.js?v=13" defer></script>
+<script src="/assets/app.js?v=14" defer></script>
 </body>
 </html>

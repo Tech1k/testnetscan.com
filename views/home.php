@@ -23,10 +23,25 @@ $supply    = ts_supply_info($net);
 $dist      = ts_mining_distribution($net);   // mempool.space-style pool snapshot for the home
 $mwebTot   = ts_mweb_enabled($net) ? ts_mweb_peg_totals($net) : null;
 
-// Fee-band totals for the mempool congestion bars (largest band = full width).
-$maxVsize = 1;
+// Mempool congestion bars. The raw histogram is 0.1-sat/vB resolution (dozens of
+// bands -> a very long card), so aggregate to whole-sat/vB bands and keep the ~10
+// busiest by vsize, shown high-rate first. The largest band is the full-width bar.
+$agg = [];
 foreach ($mem['fee_histogram'] as $band) {
-    if (($band[1] ?? 0) > $maxVsize) { $maxVsize = $band[1]; }
+    $r = (int) floor((float) ($band[0] ?? 0));
+    $agg[$r] = ($agg[$r] ?? 0) + (int) ($band[1] ?? 0);
+}
+krsort($agg);
+$feeBands = [];
+foreach ($agg as $r => $vs) { $feeBands[] = [$r, $vs]; }
+if (count($feeBands) > 10) {
+    usort($feeBands, function ($a, $b) { return $b[1] <=> $a[1]; });   // busiest first
+    $feeBands = array_slice($feeBands, 0, 10);
+    usort($feeBands, function ($a, $b) { return $b[0] <=> $a[0]; });   // back to high-rate first
+}
+$maxVsize = 1;
+foreach ($feeBands as $band) {
+    if ($band[1] > $maxVsize) { $maxVsize = $band[1]; }
 }
 
 // mempool.space-style blocks strip: projected mempool blocks + recent stats.
@@ -90,7 +105,7 @@ ts_head($net, [
         <div class="blk-fee" style="color:<?= h($bc) ?>"><?= h(number_format($b['med_feerate'], 1)) ?> <span class="blk-unit">sat/vB</span></div>
         <?php if ($b['max_feerate'] > $b['min_feerate']): ?><div class="blk-range"><?= h(number_format($b['min_feerate'], 1)) ?>-<?= h(number_format($b['max_feerate'], 1)) ?></div><?php endif; ?>
         <div class="blk-meta"><?= commas($b['txs']) ?> tx · <?= h(ts_size_str((int) $b['size'], 'B')) ?></div>
-        <div class="blk-age"><?= h(time_ago($b['time'])) ?></div>
+        <div class="blk-age" data-time="<?= (int) $b['time'] ?>"><?= h(time_ago($b['time'])) ?></div>
       </a>
       <?php endforeach; ?>
     </div>
@@ -185,14 +200,14 @@ ts_head($net, [
 <?php endif; ?>
 <?php if ($twoCol): ?></div><?php endif; ?>
 
-<?php if ($mem['fee_histogram']): ?>
+<?php if ($feeBands): ?>
 <div class="card">
   <div class="card-h"><span><?= ts_icon('layers') ?>Mempool congestion</span> <a class="sub" href="<?= h(ts_u($net)) ?>/mempool">sat/vB &rarr; vsize</a></div>
   <div class="card-b">
-    <?php foreach ($mem['fee_histogram'] as $band): ?>
+    <?php foreach ($feeBands as $band): ?>
       <?php $rate = $band[0] ?? 0; $vs = $band[1] ?? 0; $pct = round(100 * $vs / $maxVsize); ?>
       <div class="febar-row">
-        <span class="febar-label mono"><?= h(number_format((float) $rate, 1)) ?></span>
+        <span class="febar-label mono"><?= h(number_format((float) $rate, 0)) ?>+</span>
         <span class="febar"><span style="width:<?= $pct ?>%"></span></span>
         <span class="febar-val muted mono"><?= commas(round($vs / 1000)) ?> kvB</span>
       </div>
@@ -226,7 +241,7 @@ ts_head($net, [
             <td><a href="<?= h(ts_block_href($net, $b['id'])) ?>"><?= commas($b['height']) ?></a></td>
             <td class="mono"><a class="addr" href="<?= h(ts_block_href($net, $b['id'])) ?>"><?= h(shorten($b['id'], 8, 6)) ?></a></td>
             <td class="amt"><?= commas($b['tx_count']) ?></td>
-            <td class="amt age" data-sort="<?= (int) $b['timestamp'] ?>"><?= h(time_ago($b['timestamp'])) ?></td>
+            <td class="amt age" data-sort="<?= (int) $b['timestamp'] ?>" data-time="<?= (int) $b['timestamp'] ?>"><?= h(time_ago($b['timestamp'])) ?></td>
           </tr>
         <?php endforeach; ?>
         </tbody>
