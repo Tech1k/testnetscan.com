@@ -989,7 +989,10 @@ function ts_address_txs(array $net, string $address, string $mode = 'all', ?stri
         return null;
     }
     $sh = bin2hex(strrev(hash('sha256', hex2bin($spk), true)));
-    $history = ts_scripthash_history($net, $sh) ?? [];   // cached (coalesces repeated polls); null (electrs down) -> empty list, page already degrades via stats
+    $history = ts_scripthash_history($net, $sh);
+    if ($history === null) {
+        return null;   // electrs down -> degrade (API 503); the HTML address page already bailed on stats
+    }
 
     $confirmed = [];
     $mempool = [];
@@ -1410,9 +1413,12 @@ function ts_scripthash_stats(array $net, string $sh): ?array
     return ts_stats_for_scripthash($net, $sh, $match, 'scripthash', $sh);
 }
 
-function ts_scripthash_txs(array $net, string $sh, string $mode = 'all', ?string $afterTxid = null): array
+function ts_scripthash_txs(array $net, string $sh, string $mode = 'all', ?string $afterTxid = null): ?array
 {
-    $history = ts_scripthash_history($net, $sh) ?? [];
+    $history = ts_scripthash_history($net, $sh);
+    if ($history === null) {
+        return null;   // electrs down -> degrade (API 503), never a false-empty history
+    }
     $conf = [];
     $mem = [];
     foreach ($history as $r) {

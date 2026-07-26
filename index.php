@@ -757,15 +757,11 @@ function ts_route_api(array $net, array $r, string $method): void
                 $st ? json_out($st) : api_error('Address index unavailable', 503);   // address already validated above; null = electrs down
             }
             if ($sub === 'txs') {
-                $kind = $r[3] ?? '';
-                if ($kind === 'mempool') {
-                    json_out(ts_address_txs($net, $addr, 'mempool'));
-                }
-                if ($kind === 'chain') {
-                    $after = $r[4] ?? null;
-                    json_out(ts_address_txs($net, $addr, 'chain', $after));
-                }
-                json_out(ts_address_txs($net, $addr, 'all'));
+                $kind  = $r[3] ?? '';
+                $mode  = ($kind === 'mempool' || $kind === 'chain') ? $kind : 'all';
+                $after = $kind === 'chain' ? ($r[4] ?? null) : null;
+                $txs = ts_address_txs($net, $addr, $mode, $after);   // null = electrs down (address already validated)
+                $txs === null ? api_error('Address index unavailable', 503) : json_out($txs);
             }
             if ($sub === 'utxo') {
                 json_out(ts_address_utxos($net, $addr) ?? [], 200, 5);
@@ -785,14 +781,11 @@ function ts_route_api(array $net, array $r, string $method): void
                 $st ? json_out($st) : api_error('Address index unavailable', 503);
             }
             if ($sub === 'txs') {
-                $kind = $r[3] ?? '';
-                if ($kind === 'mempool') {
-                    json_out(ts_scripthash_txs($net, $sh, 'mempool'));
-                }
-                if ($kind === 'chain') {
-                    json_out(ts_scripthash_txs($net, $sh, 'chain', $r[4] ?? null));
-                }
-                json_out(ts_scripthash_txs($net, $sh, 'all'));
+                $kind  = $r[3] ?? '';
+                $mode  = ($kind === 'mempool' || $kind === 'chain') ? $kind : 'all';
+                $after = $kind === 'chain' ? ($r[4] ?? null) : null;
+                $txs = ts_scripthash_txs($net, $sh, $mode, $after);   // null = electrs down
+                $txs === null ? api_error('Address index unavailable', 503) : json_out($txs);
             }
             if ($sub === 'utxo') {
                 json_out(ts_scripthash_utxos($net, $sh), 200, 5);
