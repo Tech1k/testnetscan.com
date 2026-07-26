@@ -1,10 +1,10 @@
 /* TestnetScan service worker: offline app shell + static-asset caching.
    Chain data (/api, pages) stays network-first so it is never stale.
    SPDX-License-Identifier: AGPL-3.0-or-later */
-const VERSION = 'ts-v38';
+const VERSION = 'ts-v39';
 const SHELL = [
   '/assets/app.css?v=34',
-  '/assets/app.js?v=14',
+  '/assets/app.js?v=15',
   '/assets/qrcode.js?v=1',
   '/assets/theme-init.js?v=1',
   '/assets/favicon.svg',
