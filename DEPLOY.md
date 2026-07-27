@@ -191,7 +191,9 @@ history views use it; otherwise (stale/absent/disabled) everything falls back to
 ## 6. Stats snapshot cron (mining history + Monero emission)
 
 `tools/snapshot.php` records one mempool / fee / tip row per network for the **Mining**
-history charts, and advances the Monero cumulative-emission state in bounded chunks. Run it
+history charts, advances the Monero cumulative-emission state in bounded chunks, warms the
+UTXO-set summary, and fills the per-block **economics index** that backs the long-range
+**Charts** page (fees / rewards / fee-rates / sizes-weights / hashrate over time). Run it
 every ~5 minutes for every enabled lane:
 
 ```ini
@@ -214,13 +216,31 @@ Without it the mining mempool/fee-history charts stay empty and the Monero circu
 card never appears (everything else works). The first runs bootstrap Monero emission over a
 few cycles; after that it just tracks the tip.
 
-The same cron also drives the **block audit** (the "Template audit" card on each block:
-predicted-vs-mined transactions). It snapshots the fee-ordered next-block template into
-`db/audit.sqlite` (created automatically beside the cache DB; best-effort, no config) and
-diffs each newly-confirmed block against the snapshot taken while it was pending. A block is
-only audited if a snapshot landed in its pending window, so on fast/bursty testnets the
-5-minute cadence misses many blocks - drop `OnUnitActiveSec` to `60` (or `* * * * *` in cron)
-if you want dense audit coverage. Snapshots self-prune after 48h, audits after 30 days.
+The same full run also drives the **block audit** (the "Block health / Template audit" card on
+each block: predicted-vs-mined transactions) and fills the **block-economics index**
+(`db/blockindex.sqlite`, auto-created beside the cache DB; the Charts page backfills over the
+first hours/days, bounded per run by `blockindex_per_run`). Both SQLite DBs are best-effort and
+need no manual setup - just keep `db/` writable. The `mempool_snap` scratch self-prunes after
+48h; audit result rows are kept long-term (only the bulky per-block template blob is stripped
+after 48h) so block-health history accrues.
+
+**Block-audit coverage - the one extra timer worth adding.** A block is only audited if a
+template snapshot landed while it was pending, and testnet blocks arrive faster than 5 min, so
+the full run alone leaves coverage sparse. Rather than run the *whole* (heavy) job more often,
+schedule the lightweight **`--tick`** mode - it does ONLY the audit snapshot + diff (no stats /
+UTXO / index work), so it is cheap to run every ~30-60s:
+
+```
+* * * * * www-data php /var/www/testnetscan.com/tools/snapshot.php --tick >/dev/null 2>&1
+```
+
+(or a second systemd timer at `OnUnitActiveSec=60`). `--utxo` forces a fresh UTXO-set scan
+(bypasses the cache + debounce) to warm the Node-page stats on demand.
+
+Config (all optional, sane defaults via `??`): `blockindex_retain` (~blocks of history to keep
+for the Charts page, default 52560), `blockindex_per_run` (backfill speed, default 150), and
+`trust_cf_ip` (leave `true` behind Cloudflare; set `false` if the origin is directly reachable
+so a spoofed `CF-Connecting-IP` can't reset a rate-limit bucket).
 
 ## 7. Monero nodes (optional lanes)
 
