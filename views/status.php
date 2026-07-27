@@ -101,6 +101,6 @@ $allUp = $rows ? array_reduce($rows, function ($c, $r) { return $c && $r['up']; 
 <?php if (!$rows): ?><div class="card"><div class="card-b muted">No networks enabled.</div></div><?php endif; ?>
 </main>
 <?php ts_footer(); ?>
-<script src="/assets/app.js?v=15" defer></script>
+<script src="/assets/app.js?v=16" defer></script>
 </body>
 </html>

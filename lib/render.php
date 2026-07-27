@@ -230,7 +230,7 @@ function ts_foot(array $net, array $opt = []): void
 </main>
 <?php ts_footer(); ?>
 <?php if (!empty($opt['qr'])): ?><script src="/assets/qrcode.js?v=1" defer></script><?php endif; ?>
-<script src="/assets/app.js?v=15" defer></script>
+<script src="/assets/app.js?v=16" defer></script>
 </body>
 </html>
 <?php

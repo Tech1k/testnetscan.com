@@ -101,14 +101,6 @@ function ts_blockindex_tick(array $net, ?int $maxPerRun = null): int
     if ($tip <= 0) {
         return 0;
     }
-    // A permanent chain shrink (reorg to a shorter chain) can strand rows ABOVE the new
-    // tip: getblockhash for those heights errors so the reorg guard can't re-index them,
-    // and the timeseries queries have no upper bound. Drop them so stale orphans never
-    // surface. Normally a no-op (nothing is indexed past the tip).
-    try {
-        $db->prepare('DELETE FROM block_index WHERE net = ? AND height > ?')->execute([$net['slug'], $tip]);
-    } catch (Throwable $e) {
-    }
     $retain = ts_blockindex_retain();
     $floor = $retain > 0 ? max(0, $tip - $retain) : 0;   // retain 0 => keep the whole chain
     $done = 0;
@@ -165,6 +157,13 @@ function ts_blockindex_tick(array $net, ?int $maxPerRun = null): int
     }
     try {
         $db->prepare('DELETE FROM block_index WHERE net = ? AND height < ?')->execute([$net['slug'], $floor]);
+        // Clear rows stranded ABOVE the tip after a shallow reorg (forward-fill only adds up to
+        // tip). GUARD against a transient low tip (node resyncing / RPC hiccup returning a stale
+        // height) wiping the whole index: only prune when the drop is within a plausible reorg
+        // depth, never a massive gap.
+        if ($have && ((int) $r['mx'] - $tip) > 0 && ((int) $r['mx'] - $tip) <= 1000) {
+            $db->prepare('DELETE FROM block_index WHERE net = ? AND height > ?')->execute([$net['slug'], $tip]);
+        }
     } catch (Throwable $e) {
     }
     return $done;
