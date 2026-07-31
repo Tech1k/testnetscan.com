@@ -38,7 +38,7 @@ function json_out($data, int $status = 200, int $cache = 0): void
         ts_cors();
         header('Content-Type: application/json; charset=utf-8');
         if ($cache > 0) {
-            header('Cache-Control: public, max-age=' . $cache);
+            header('Cache-Control: public, max-age=' . $cache . ', s-maxage=' . $cache);   // s-maxage = explicit Cloudflare edge TTL (pair with a "cache eligible" CF rule)
         }
     }
     echo json_encode($data, JSON_UNESCAPED_SLASHES);
@@ -55,7 +55,7 @@ function text_out(string $body, int $status = 200, string $ctype = 'text/plain',
         $charset = stripos($ctype, 'text/') === 0 ? '; charset=utf-8' : '';
         header('Content-Type: ' . $ctype . $charset);
         if ($cache > 0) {
-            header('Cache-Control: public, max-age=' . $cache);
+            header('Cache-Control: public, max-age=' . $cache . ', s-maxage=' . $cache);   // s-maxage = explicit Cloudflare edge TTL (pair with a "cache eligible" CF rule)
         }
     }
     echo $body;

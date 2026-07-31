@@ -113,16 +113,63 @@ function ts_cache_evict(PDO $db): void
     }
 }
 
-/** Get-or-compute helper. $producer returns a value that is JSON-encoded. */
+/**
+ * Get-or-compute helper. $producer returns a value that is JSON-encoded.
+ *
+ * Stampede-protected: when a hot key (e.g. the 5s tip) expires while many requests
+ * are in flight, the naive "miss -> everyone recomputes" makes N concurrent callers
+ * all hit the node/electrs at once - the exact thundering herd that spikes latency
+ * under load. Instead, the FIRST caller to see the stale row claims the refresh with
+ * an atomic conditional bump; the others serve the (briefly grace-extended) stale
+ * value and skip the producer entirely. Only one request refreshes per expiry.
+ */
 function cache_remember(string $key, int $ttl, callable $producer)
 {
-    $hit = cache_get($key);
-    if ($hit !== null) {
-        $decoded = json_decode($hit, true);
-        if ($decoded !== null || $hit === 'null') {
-            return $decoded;
+    $db = ts_cache_pdo();
+    if (!$db) {
+        return $producer();                          // no cache -> just compute (best-effort)
+    }
+    $now = time();
+    $row = null;
+    try {
+        $st = $db->prepare('SELECT v, exp FROM cache WHERE k = ?');
+        $st->execute([$key]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        $row = null;
+    }
+
+    if ($row) {
+        $exp = (int) $row['exp'];
+        if ($exp === 0 || $exp >= $now) {            // fresh (or immutable) -> serve it
+            $d = json_decode($row['v'], true);
+            if ($d !== null || $row['v'] === 'null') {
+                return $d;
+            }
+        } else {
+            // Stale. Atomically claim the single-flight refresh: `exp < now` in the
+            // WHERE means only the first concurrent claimer flips the row; the others
+            // get rowCount 0 and serve the stale value below (no producer call). The
+            // brief grace window covers the recompute so they never see it re-expire.
+            $claimed = false;
+            try {
+                $grace = $now + ($ttl > 0 ? min($ttl, 8) : 8);
+                $u = $db->prepare('UPDATE cache SET exp = ? WHERE k = ? AND exp != 0 AND exp < ?');
+                $u->execute([$grace, $key, $now]);
+                $claimed = $u->rowCount() > 0;
+            } catch (Throwable $e) {
+                $claimed = false;                    // lock contention -> serve stale below
+            }
+            if (!$claimed) {
+                $d = json_decode($row['v'], true);
+                if ($d !== null || $row['v'] === 'null') {
+                    return $d;                        // a sibling is refreshing; serve stale
+                }
+            }
+            // claimed (or the stale value is unusable) -> fall through and recompute
         }
     }
+
     $value = $producer();
     if ($value !== null) {
         cache_set($key, json_encode($value, JSON_UNESCAPED_SLASHES), $ttl);
