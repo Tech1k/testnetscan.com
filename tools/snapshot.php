@@ -27,6 +27,19 @@ $slug = null;
 foreach ($args as $a) { if (strpos($a, '--') !== 0) { $slug = $a; break; } }
 $nets = $slug ? [ts_net($slug)] : array_values(ts_networks());
 
+// Refuse to overlap. A full run can take a while (4 nets x block-index backfill, and a UTXO-set
+// scan on a coinstatsindex-less node is minutes-long). Without this, crontab firing again every
+// 5 min while a run is still going piles up processes that lock the shared cache DB and hammer
+// the nodes - starving the PHP-FPM workers that serve requests, until the whole API times out.
+// Separate locks for --tick (light, frequent) vs the full run so they never block each other.
+$lockPath = (($cdb = ts_config()['cache_db'] ?? null) ? dirname($cdb) : sys_get_temp_dir())
+    . '/ts-snapshot' . ($tickOnly ? '-tick' : '') . '.lock';
+$lockFp = @fopen($lockPath, 'c');
+if ($lockFp && !flock($lockFp, LOCK_EX | LOCK_NB)) {
+    fwrite(STDERR, "snapshot: another run is already in progress; exiting\n");
+    exit(0);
+}
+
 $n = 0;
 foreach ($nets as $net) {
     if (!$net) {
@@ -54,9 +67,12 @@ foreach ($nets as $net) {
         $done = ts_xmr_emission_refresh($net);
         echo '     emission ' . ($done ? 'up-to-date' : 'catching up') . ' ' . $net['slug'] . "\n";
     }
-    // UTXO: warm the UTXO-set summary (gettxoutsetinfo scans the chainstate) so
-    // the Node page reads a cached value instead of computing it on request.
-    if (($net['kind'] ?? 'utxo') === 'utxo' && function_exists('ts_txoutset_refresh')) {
+    // UTXO-set warm (gettxoutsetinfo) is OFF by default: on a node WITHOUT coinstatsindex it holds
+    // cs_main for the whole minutes-long scan, blocking ALL other RPC (getblockcount included) and
+    // hanging the entire API. Enable 'utxo_scan' in config.php ONLY if the node has coinstatsindex
+    // (then the scan is fast + non-blocking), or force one on demand with --utxo.
+    if (($net['kind'] ?? 'utxo') === 'utxo' && function_exists('ts_txoutset_refresh')
+        && ($forceUtxo || (ts_config()['utxo_scan'] ?? false))) {
         $u = ts_txoutset_refresh($net, $forceUtxo);
         echo '     utxo-set ' . ($u ? 'refreshed (h' . $u['height'] . ')' : 'unavailable (scan pending or timed out)') . ' ' . $net['slug'] . "\n";
     }

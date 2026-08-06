@@ -18,14 +18,14 @@
 function ts_tip_height(array $net): int
 {
     return cache_remember('tiph:' . $net['slug'], 5, function () use ($net) {
-        return (int) ts_rpc($net, 'getblockcount');
+        return (int) ts_rpc($net, 'getblockcount', [], 5);   // short timeout: a pinned node must fail fast, not park the worker 25s
     });
 }
 
 function ts_tip_hash(array $net): string
 {
     return cache_remember('tiphash:' . $net['slug'], 5, function () use ($net) {
-        return (string) ts_rpc($net, 'getbestblockhash');
+        return (string) ts_rpc($net, 'getbestblockhash', [], 5);
     });
 }
 
@@ -40,7 +40,7 @@ function ts_block_hash_at(array $net, int $height): ?string
     if ($hit !== null) {
         return $hit;
     }
-    $hash = ts_rpc_soft($net, 'getblockhash', [$height]);
+    $hash = ts_rpc_soft($net, 'getblockhash', [$height], 5);
     if (!is_string($hash)) {
         return null;
     }
@@ -1924,13 +1924,15 @@ function ts_txoutset_refresh(array $net, bool $force = false): ?array
             return null;
         }
     }
-    cache_set($key . ':scan', '1', 1320);   // must outlive the scan below so two runs can't overlap
+    cache_set($key . ':scan', '1', 90);      // brief overlap guard; the snapshot flock is the real one
     try {
-        // Long per-call timeout (20 min ceiling, not a fixed wait): a coinstatsindex-less
-        // node needs many minutes on a large chainstate. 'none' skips the muhash.
-        $r = ts_rpc_soft($net, 'gettxoutsetinfo', ['none'], 1200);
+        // SHORT timeout on purpose: this only runs on a node WITH coinstatsindex (gettxoutsetinfo
+        // is then fast + does NOT hold cs_main). If it's somehow run without, we fail fast (45s)
+        // instead of pinning a worker for the whole minutes-long scan while cs_main is locked.
+        // 'none' skips the muhash. See tools/snapshot.php: the scan is gated behind 'utxo_scan'.
+        $r = ts_rpc_soft($net, 'gettxoutsetinfo', ['none'], 45);
         if (!is_array($r)) {
-            $r = ts_rpc_soft($net, 'gettxoutsetinfo', [], 1200);
+            $r = ts_rpc_soft($net, 'gettxoutsetinfo', [], 45);
         }
     } catch (Throwable $e) {
         return null;

@@ -62,12 +62,14 @@ function ts_rpc_exec(array $rpc, string $payload, int $timeout): array
         if ($resp !== false) {
             return [(int) curl_getinfo($ch, CURLINFO_HTTP_CODE), $resp];
         }
-        $err = curl_error($ch);
+        $err   = curl_error($ch);
+        $errno = curl_errno($ch);
         curl_close($ch);
         unset($handles[$url]);
-        // Only a reused handle failing looks like a dropped keep-alive socket;
-        // retry once. A fresh handle failing is a genuine transport error.
-        if (!$reused || $tries >= 2) {
+        // Retry once ONLY when a reused keep-alive socket dropped (got-nothing / recv / send) -
+        // NEVER on a timeout (28: the node is slow/pinned, so retrying just hits it again and
+        // doubles the worker-hold) and never on a fresh handle (a genuine transport error).
+        if (!$reused || $tries >= 2 || !in_array($errno, [52, 55, 56], true)) {
             throw new RpcException('Core RPC unreachable: ' . $err);
         }
     }

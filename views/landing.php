@@ -9,24 +9,30 @@ header('Content-Type: text/html; charset=utf-8');
 header('Cache-Control: public, s-maxage=5, max-age=0');
 $nets = ts_networks();
 
-// Per-network live snapshot (tip + mempool), resilient to a down daemon.
-$snap = [];
-foreach ($nets as $n) {
-    $s = ['tip' => null, 'mem' => null, 'up' => false];
-    try {
-        if (($n['kind'] ?? 'utxo') === 'monero') {
-            $info = ts_xmr_info($n);
-            if (is_array($info)) {
-                $s = ['tip' => max(0, $info['height'] - 1), 'mem' => (int) $info['tx_pool_size'], 'up' => true];
+// Per-network live snapshot (tip + mempool), resilient to a down daemon. Coalesced: a burst of
+// '/' hits (the highest-traffic entry) must NOT each fan out per-net RPC - at most one worker
+// per 5s builds it; everyone else reads the cached snapshot.
+$snap = cache_remember('landing:snap', 5, function () use ($nets) {
+    $out = [];
+    foreach ($nets as $n) {
+        $s = ['tip' => null, 'mem' => null, 'up' => false];
+        try {
+            if (($n['kind'] ?? 'utxo') === 'monero') {
+                $info = ts_xmr_info($n);
+                if (is_array($info)) {
+                    $s = ['tip' => max(0, $info['height'] - 1), 'mem' => (int) $info['tx_pool_size'], 'up' => true];
+                }
+            } else {
+                $s = ['tip' => ts_tip_height($n), 'mem' => (int) (ts_esplora_mempool($n)['count'] ?? 0), 'up' => true];
             }
-        } else {
-            $s = ['tip' => ts_tip_height($n), 'mem' => (int) (ts_esplora_mempool($n)['count'] ?? 0), 'up' => true];
+        } catch (Throwable $e) {
+            $s['up'] = false;
         }
-    } catch (Throwable $e) {
-        $s['up'] = false;
+        $out[$n['slug']] = $s;
     }
-    $snap[$n['slug']] = $s;
-}
+    return $out;
+});
+if (!is_array($snap)) { $snap = []; }
 
 $netCount = count($nets);
 $upCount = 0;
