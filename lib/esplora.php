@@ -1905,6 +1905,20 @@ function ts_txoutset_info(array $net): ?array
  * expensive muhash) and cache it ~30 min. Fully soft. Called by the snapshot
  * cron so the Node page reads a warm value instead of scanning the chainstate.
  */
+/**
+ * True only if the node exposes a SYNCED coinstatsindex - the one case where gettxoutsetinfo is
+ * fast and does NOT hold cs_main. Litecoin Core has no coinstatsindex (it never rebased onto Core
+ * 22, where it was added), so ltc lanes always return false and skip the UTXO-set scan; bitcoind
+ * with `coinstatsindex=1` returns true. Cached 1h (index config doesn't change at runtime).
+ */
+function ts_node_has_coinstatsindex(array $net): bool
+{
+    return (bool) cache_remember('coinstats:' . $net['slug'], 3600, function () use ($net) {
+        $info = ts_rpc_soft($net, 'getindexinfo', [], 5);
+        return (is_array($info) && !empty($info['coinstatsindex']['synced'])) ? 1 : 0;
+    });
+}
+
 function ts_txoutset_refresh(array $net, bool $force = false): ?array
 {
     $key = 'txoutset:' . $net['slug'];
@@ -1929,7 +1943,7 @@ function ts_txoutset_refresh(array $net, bool $force = false): ?array
         // SHORT timeout on purpose: this only runs on a node WITH coinstatsindex (gettxoutsetinfo
         // is then fast + does NOT hold cs_main). If it's somehow run without, we fail fast (45s)
         // instead of pinning a worker for the whole minutes-long scan while cs_main is locked.
-        // 'none' skips the muhash. See tools/snapshot.php: the scan is gated behind 'utxo_scan'.
+        // 'none' skips the muhash. See tools/snapshot.php: the scan is gated on ts_node_has_coinstatsindex.
         $r = ts_rpc_soft($net, 'gettxoutsetinfo', ['none'], 45);
         if (!is_array($r)) {
             $r = ts_rpc_soft($net, 'gettxoutsetinfo', [], 45);

@@ -67,12 +67,12 @@ foreach ($nets as $net) {
         $done = ts_xmr_emission_refresh($net);
         echo '     emission ' . ($done ? 'up-to-date' : 'catching up') . ' ' . $net['slug'] . "\n";
     }
-    // UTXO-set warm (gettxoutsetinfo) is OFF by default: on a node WITHOUT coinstatsindex it holds
-    // cs_main for the whole minutes-long scan, blocking ALL other RPC (getblockcount included) and
-    // hanging the entire API. Enable 'utxo_scan' in config.php ONLY if the node has coinstatsindex
-    // (then the scan is fast + non-blocking), or force one on demand with --utxo.
+    // UTXO-set warm (gettxoutsetinfo): only run where the node has a synced coinstatsindex (then
+    // it's fast + doesn't hold cs_main). WITHOUT it the scan holds cs_main for minutes and hangs the
+    // whole API - so it's auto-skipped. Litecoin Core has no coinstatsindex, so ltc never scans;
+    // bitcoind with coinstatsindex=1 does. --utxo forces one on a node you know can take it.
     if (($net['kind'] ?? 'utxo') === 'utxo' && function_exists('ts_txoutset_refresh')
-        && ($forceUtxo || (ts_config()['utxo_scan'] ?? false))) {
+        && ($forceUtxo || ts_node_has_coinstatsindex($net))) {
         $u = ts_txoutset_refresh($net, $forceUtxo);
         echo '     utxo-set ' . ($u ? 'refreshed (h' . $u['height'] . ')' : 'unavailable (scan pending or timed out)') . ' ' . $net['slug'] . "\n";
     }

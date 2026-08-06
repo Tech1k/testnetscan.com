@@ -35,10 +35,6 @@ return [
     'blockindex_retain'  => 52560,
     'blockindex_per_run' => 150,
 
-    // UTXO-set summary on the Node page (gettxoutsetinfo). Keep FALSE unless the node has
-    // coinstatsindex: without it the scan holds cs_main for minutes and hangs the whole API.
-    'utxo_scan' => false,
-
     // /api/v1/backend-info descriptor (wallets probe this; host comes from
     // 'canonical_host' defined below). Cosmetic.
     'version'        => '1.0.0',
