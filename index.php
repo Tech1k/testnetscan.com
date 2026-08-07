@@ -548,7 +548,7 @@ function ts_route_api_monero(array $net, array $r, string $method): void
         }
 
         case 'search': {
-            $q = trim((string) ($r[1] ?? ($_GET['q'] ?? '')));
+            $q = substr(trim((string) ($r[1] ?? ($_GET['q'] ?? ''))), 0, 120);   // bound like the HTML search
             if ($q === '') { api_error('empty query', 400); }
             if (ctype_digit($q)) {
                 $hash = ts_xmr_block_hash_at($net, (int) $q);
@@ -764,7 +764,8 @@ function ts_route_api(array $net, array $r, string $method): void
                 $txs === null ? api_error('Address index unavailable', 503) : json_out($txs);
             }
             if ($sub === 'utxo') {
-                json_out(ts_address_utxos($net, $addr) ?? [], 200, 5);
+                $u = ts_address_utxos($net, $addr);   // address validated above; null = electrs down (match stats/txs), NOT a false-empty
+                $u === null ? api_error('Address index unavailable', 503) : json_out($u, 200, 5);
             }
             api_error('Not found', 404);
 
@@ -788,7 +789,8 @@ function ts_route_api(array $net, array $r, string $method): void
                 $txs === null ? api_error('Address index unavailable', 503) : json_out($txs);
             }
             if ($sub === 'utxo') {
-                json_out(ts_scripthash_utxos($net, $sh), 200, 5);
+                $u = ts_scripthash_utxos($net, $sh);   // null = electrs down; 503 like the stats/txs lanes, never a false-empty []
+                $u === null ? api_error('Address index unavailable', 503) : json_out($u, 200, 5);
             }
             api_error('Not found', 404);
 

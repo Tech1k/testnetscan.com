@@ -1117,8 +1117,12 @@ function ts_esplora_mempool(array $net): array
 
 function ts_mempool_txids(array $net): array
 {
-    $r = ts_rpc_soft($net, 'getrawmempool', [false]);
-    return is_array($r) ? array_values($r) : [];
+    // Short server cache (like /mempool + /mempool/recent): the full txid list is one getrawmempool
+    // per call, so a polling client would otherwise hit Core directly on every request.
+    return cache_remember('memtxids:' . $net['slug'], 3, function () use ($net) {
+        $r = ts_rpc_soft($net, 'getrawmempool', [false]);
+        return is_array($r) ? array_values($r) : [];
+    });
 }
 
 /** Esplora /mempool/recent: up to 10 entries with output-value sums. */
@@ -1391,6 +1395,11 @@ function ts_scripthash_history(array $net, string $sh): ?array
     // Returns NULL when electrs is unreachable/erroring (index down or mid-resync) so callers
     // degrade instead of showing a false, confident "0 balance". An empty array is a genuinely
     // unused address.
+    if (!ts_address_index_fresh($net)) {
+        return null;   // electrs index measurably behind the chain (mid-reindex/resync): a
+                       // legitimately-empty [] here would be a FALSE-EMPTY -> 503 instead, so a
+                       // deposit-watcher never reads "no funds" off a stale index and stalls a swap.
+    }
     $cached = cache_remember('shist:' . $net['slug'] . ':' . $sh, 8, function () use ($net, $sh) {
         try {
             $h = ts_electrum($net)->request('blockchain.scripthash.get_history', [$sh]);
@@ -1462,24 +1471,34 @@ function ts_scripthash_txs(array $net, string $sh, string $mode = 'all', ?string
     return $out;
 }
 
-function ts_scripthash_utxos(array $net, string $sh): array
+function ts_scripthash_utxos(array $net, string $sh): ?array
 {
     // Short TTL: UTXOs are mutable, but wallets poll this repeatedly between
     // blocks. A few-second server cache collapses those polls without ever
     // serving a long-stale set. No history fingerprint (that would double the
     // electrs round-trips just to guard a cheap listunspent).
-    $cached = cache_remember('autxo:' . $net['slug'] . ':' . $sh, 10, function () use ($net, $sh) {
-        $utxos = ts_electrum($net)->request('blockchain.scripthash.listunspent', [$sh]);
-        if (!is_array($utxos)) {
-            return null;   // transient electrs error: don't cache, don't poison
-        }
-        $out = [];
-        foreach ($utxos as $u) {
-            $out[] = ts_map_utxo_row($net, $u);
-        }
-        return $out;
-    });
-    return is_array($cached) ? $cached : [];
+    // Returns NULL on a transient electrs error (blip, or a thrown invalid_argument mid-reindex) so the
+    // /utxo endpoint can 503 instead of serving a FALSE-EMPTY [] -> a deposit-watcher reads [] as "no
+    // funds yet" and stalls a swap silently. Mirrors the address stats/txs lanes' null -> 503 posture.
+    if (!ts_address_index_fresh($net)) {
+        return null;   // stale index -> a false-empty UTXO set; 503 like the electrs-down path, never []
+    }
+    try {
+        $cached = cache_remember('autxo:' . $net['slug'] . ':' . $sh, 10, function () use ($net, $sh) {
+            $utxos = ts_electrum($net)->request('blockchain.scripthash.listunspent', [$sh]);
+            if (!is_array($utxos)) {
+                return null;   // transient electrs error: don't cache, don't poison
+            }
+            $out = [];
+            foreach ($utxos as $u) {
+                $out[] = ts_map_utxo_row($net, $u);
+            }
+            return $out;
+        });
+    } catch (\Throwable $e) {
+        return null;   // electrs threw mid-request (blip / invalid_argument): unavailable, never a false-empty
+    }
+    return is_array($cached) ? $cached : null;
 }
 
 // ---- mempool.space /v1 extensions -----------------------------------------
@@ -1979,6 +1998,65 @@ function ts_electrum_reachable(array $net): bool
             return false;
         }
     });
+}
+
+/**
+ * Index-freshness guard for the address/scripthash lanes.
+ *
+ * electrs can be UP (listunspent/get_history answering fine) yet have its index
+ * BEHIND the chain tip - mid-reindex, or catching up after downtime. In that state
+ * it returns a legitimately-empty [] for a funded address: a FALSE-EMPTY 200 that a
+ * swap deposit-watcher reads as "no funds yet" and silently stalls on. The
+ * electrs-down -> null -> 503 path does NOT cover this (electrs is answering).
+ *
+ * Returns false ONLY when we can CONFIDENTLY see electrs is more than N blocks behind
+ * the node (N = index_lag_tolerance, default 3: absorbs the block or two of normal
+ * node-ahead-of-index skew on a fast testnet without masking a real resync, which is
+ * behind by tens to thousands of blocks). FAILS OPEN (true) on any uncertainty - a
+ * hard electrs failure is already handled downstream by get_history/listunspent
+ * null -> 503, and a merely slow/down node RPC must not manufacture a NEW false-503.
+ *
+ * Cheap by construction: the VERDICT is cached 10s (single-flight), and it first
+ * short-circuits on the already-cached reachability probe so a down/hung electrs is
+ * never re-probed here. The live tip probe uses a dedicated SHORT-timeout, no-retry
+ * client (not the shared 8s one, whose reconnect+renegotiate can park ~2x timeout),
+ * and the node tip reuses ts_tip_height's 5s cache. Net: at most one short probe per
+ * network per ~10s, never one per request (this explorer just fixed worker starvation).
+ */
+function ts_address_index_fresh(array $net): bool
+{
+    $tol = (int) (ts_config()['index_lag_tolerance'] ?? 3);
+    $verdict = cache_remember('idxfresh:' . $net['slug'], 10, function () use ($net, $tol) {
+        // A down/hung electrs is already known + cached by the reachability probe
+        // (server.ping, 10s TTL): do ZERO new electrs work, just fail open. The
+        // downstream get_history/listunspent null -> 503 still covers the outage.
+        if (!ts_electrum_reachable($net)) {
+            return true;
+        }
+        try {
+            // Dedicated SHORT-timeout, no-retry probe - fail-fast like ts_tip_height,
+            // so even a partial hang (pings ok, stalls on headers.subscribe) is bounded.
+            $cfg = $net['electrum'];
+            $cfg['timeout'] = min(3, (int) ($cfg['timeout'] ?? 8));
+            $cfg['retries'] = 0;
+            $hdr = (new TsElectrum($cfg))->request('blockchain.headers.subscribe');
+            $eh  = is_array($hdr) ? (int) ($hdr['height'] ?? 0) : 0;
+            if ($eh <= 0) {
+                return true;   // can't read electrs tip -> fail open
+            }
+            // Node tip (ts_tip_height, cached 5s). It THROWS on Core-RPC failure - it
+            // never returns 0 - so it MUST stay inside this try, or a slow node would
+            // propagate and manufacture a false-503. Any throw here -> fail open.
+            $nh = ts_tip_height($net);
+            if ($nh <= 0) {
+                return true;
+            }
+            return ($nh - $eh) <= $tol;
+        } catch (Throwable $e) {
+            return true;   // electrs or node probe failed -> fail open; a real outage 503s downstream
+        }
+    });
+    return $verdict !== false;   // only an explicit, cached "behind" verdict blocks; anything else = fresh
 }
 
 /**
@@ -2648,7 +2726,9 @@ function ts_health(array $net): array
 function ts_decode_script(array $net, string $hex): ?array
 {
     $hex = preg_replace('/\s+/', '', trim($hex));
-    if ($hex === '' || !ctype_xdigit($hex) || strlen($hex) % 2 !== 0) {
+    // Reject non-hex, odd-length, or an oversized blob BEFORE forwarding to the node - a script is
+    // tiny (even a big redeemscript is bounded); 200k hex chars is far past anything legitimate.
+    if ($hex === '' || !ctype_xdigit($hex) || strlen($hex) % 2 !== 0 || strlen($hex) > 200000) {
         return null;
     }
     $r = ts_rpc_soft($net, 'decodescript', [$hex]);
@@ -2659,7 +2739,9 @@ function ts_decode_script(array $net, string $hex): ?array
 function ts_decode_psbt(array $net, string $psbt): ?array
 {
     $psbt = trim($psbt);
-    if ($psbt === '') {
+    // Cap the blob before the two RPC parses (decodepsbt + analyzepsbt); a real base64 PSBT is
+    // well under this, and Apache's LimitRequestBody shouldn't be the only backstop.
+    if ($psbt === '' || strlen($psbt) > 200000) {
         return null;
     }
     $decoded = ts_rpc_soft($net, 'decodepsbt', [$psbt]);
@@ -2708,6 +2790,11 @@ function ts_encode_op_return(string $input, bool $isHex): ?array
 /** verifymessage (legacy p2pkh signing only). Returns true/false, or null on bad input. */
 function ts_verify_message(array $net, string $addr, string $sig, string $msg)
 {
+    // Bound each field before forwarding to the node: an address is <= ~130 chars, a base64
+    // signature <= ~200, and the message body is capped so a huge blob can't be pushed through RPC.
+    if (strlen($addr) > 130 || strlen($sig) > 200 || strlen($msg) > 100000) {
+        return null;
+    }
     $r = ts_rpc_soft($net, 'verifymessage', [$addr, $sig, $msg]);
     return is_bool($r) ? $r : null;
 }

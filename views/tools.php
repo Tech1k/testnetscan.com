@@ -14,19 +14,23 @@ $testRes = $testErr = null;
 $scriptRes = $scriptErr = null;
 $psbtRes = $psbtErr = null;
 $orRes = $orErr = null;
-$vm = null; $vmDone = false;
+$vm = null; $vmDone = false; $vmErr = null;
 
-// Node-hitting POST actions forward hex to the node for a full parse. Throttle per IP so the
-// tools page can't be scripted into an amplification flood (psbt/script/opreturn/verifymsg are
-// pure local compute, so they're deliberately not throttled).
-if ($isPost && in_array($action, ['broadcast', 'test', 'decode'], true)
+// Node-hitting POST actions forward the user's blob to Core RPC for a full parse (broadcast,
+// test=testmempoolaccept, decode=decoderawtransaction, script=decodescript, psbt=decodepsbt+
+// analyzepsbt, verifymsg=verifymessage). Throttle per IP so the tools page can't be scripted into
+// an RPC amplification flood. Only opreturn is pure local compute (no RPC), so it's left unthrottled.
+if ($isPost && in_array($action, ['broadcast', 'test', 'decode', 'script', 'psbt', 'verifymsg'], true)
     && function_exists('ts_rate_limit') && !ts_rate_limit('tools_tx', 30, 60)) {
     http_response_code(429);
     $isPost = false;   // skip the node calls; surface a friendly notice instead
     $rlMsg = 'Rate limit reached. Please wait a minute and try again.';
-    if ($action === 'broadcast') { $bcError = $rlMsg; }
-    elseif ($action === 'test')  { $testErr = $rlMsg; }
-    else                         { $decError = $rlMsg; }
+    if ($action === 'broadcast')     { $bcError = $rlMsg; }
+    elseif ($action === 'test')      { $testErr = $rlMsg; }
+    elseif ($action === 'decode')    { $decError = $rlMsg; }
+    elseif ($action === 'script')    { $scriptErr = $rlMsg; }
+    elseif ($action === 'psbt')      { $psbtErr = $rlMsg; }
+    else                             { $vmErr = $rlMsg; }
 }
 
 if ($isPost && $action === 'broadcast') {
@@ -272,6 +276,7 @@ ts_head($net, ['title' => 'Tools | ' . $net['label'] . ' | TestnetScan']);
       <textarea name="msg" rows="2"><?= $action === 'verifymsg' ? h($_POST['msg'] ?? '') : '' ?></textarea>
       <div class="row mt-2"><button class="btn" type="submit">Verify</button></div>
     </form>
+    <?php if ($vmErr): ?><div class="note bad"><?= h($vmErr) ?></div><?php endif; ?>
     <?php if ($vmDone): ?>
       <?php if ($vm === true): ?><div class="note ok">Valid signature.</div>
       <?php elseif ($vm === false): ?><div class="note bad">Invalid signature.</div>

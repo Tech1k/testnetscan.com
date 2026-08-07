@@ -259,7 +259,9 @@ function ts_route_og(array $segs, string $method): void
     $slug = $segs[0] ?? '';
     $type = isset($segs[1]) ? preg_replace('/\.png$/', '', $segs[1]) : 'home';
     $id   = isset($segs[2]) ? preg_replace('/\.png$/', '', $segs[2]) : '';
-    if (strlen($id) > 130 || !preg_match('/^[a-z]+$/', (string) $type)) {   // guard: ids are hashes/heights/addresses
+    // guard: ids are hashes/heights/addresses - all alphanumeric (hex, digits, base58, bech32), so
+    // reject junk (and the RPC/electrum lookup it would trigger) up front and serve the banner.
+    if (strlen($id) > 130 || !preg_match('/^[a-z]+$/', (string) $type) || ($id !== '' && !ctype_alnum($id))) {
         header('Location: ' . $fallback, true, 302);
         return;
     }

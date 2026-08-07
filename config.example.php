@@ -70,6 +70,13 @@ return [
     // Bounds per-request electrs work on very large transactions.
     'outspend_walk_limit' => 200,
 
+    // Address-index freshness tolerance (blocks). The /address + /scripthash lanes 503
+    // ("index unavailable") when electrs is more than this many blocks behind the node -
+    // catching a stale/reindexing index that would otherwise return a FALSE-EMPTY [] (a
+    // deposit-watcher reads [] as "no funds" and stalls). 3 absorbs normal
+    // node-ahead-of-index skew on a fast testnet; a real resync is far further behind.
+    'index_lag_tolerance' => 3,
+
     // Canonical host for absolute URLs (OG tags, sitemap), and the fallback for
     // an untrusted Host header.
     'canonical_host' => 'testnetscan.com',
@@ -95,6 +102,8 @@ return [
                 'port'    => 40001,   // ElectrumX SERVICES tcp:// port for BTC testnet4
                 'tls'     => false,
                 'timeout' => 8,
+                'retries' => 2,       // reconnect+retry attempts after the first, on a transport blip
+                'retry_timeout' => 3, // shortened per-retry connect/read timeout (s); bounds a hung electrs
             ],
         ],
 
@@ -113,6 +122,8 @@ return [
                 'port'    => 60001,   // ElectrumX SERVICES tcp:// port for LTC testnet
                 'tls'     => false,
                 'timeout' => 8,
+                'retries' => 2,       // reconnect+retry attempts after the first, on a transport blip
+                'retry_timeout' => 3, // shortened per-retry connect/read timeout (s); bounds a hung electrs
             ],
             // MWEB (MimbleWimble Extension Blocks). Reads ONLY from litecoind's
             // JSON-RPC (the same calls the Esplora builders use); no analytics

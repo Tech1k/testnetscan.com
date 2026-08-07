@@ -75,21 +75,66 @@ class TsElectrum
     }
 
     /**
-     * Public entry point: one reconnect-and-retry on a dropped/failed socket
-     * (code 1) so a mid-request electrs blip doesn't 503 the whole page.
-     * Server-returned errors (code 0) are not retried.
+     * Public entry point. On a TRANSPORT failure (ElectrumException code 1:
+     * dropped socket, write fail, read/connect timeout, connection refused)
+     * reconnect and retry a bounded number of times with a short backoff, so a
+     * single electrs blip or a fast restart recovers instead of 503-ing the page.
+     *
+     * SERVER-returned errors (code 0 - e.g. electrs "server busy" / invalid
+     * argument during a reindex) are NOT retried: electrs answered, so we
+     * rethrow at once and the caller's try/catch maps it to null -> 503.
+     *
+     * Worst-case worker hold is bounded: attempt 1 uses the full configured
+     * timeout, but every reconnect+retry runs on a SHORTENED timeout so a
+     * hung/firewalled host cannot park an FPM worker for many seconds. On
+     * localhost a refused/dropped socket fails ~instantly, so the extra retries
+     * are cheap in the common failure modes; only the (rare) hung host pays the
+     * shortened retry timeout.
      */
     public function request(string $method, array $params = [])
     {
+        // Attempt 1: full configured timeout, existing (persistent) socket.
         try {
             return $this->call($method, $params);
         } catch (ElectrumException $e) {
-            if ($e->getCode() === 1) {
-                $this->reconnect();
-                return $this->call($method, $params);
+            if ($e->getCode() !== 1) {
+                throw $e;                          // server error -> caller -> 503
             }
-            throw $e;
+            $last = $e;                            // transient: fall through to retries
         }
+
+        $retries = (int) ($this->cfg['retries'] ?? 2);        // attempts after the first
+        $retryTo = (int) ($this->cfg['retry_timeout'] ?? 3);  // shortened per-retry timeout (s)
+        if ($retryTo < 1) {
+            $retryTo = 1;
+        }
+        if ($retryTo > $this->timeout) {
+            $retryTo = $this->timeout;             // never exceed the configured timeout
+        }
+        $backoffs = [50000, 150000];               // usec before retry 1, 2, ...
+
+        $fullTimeout   = $this->timeout;
+        $this->timeout = $retryTo;                 // reconnect() + rpc() read on the short clock
+        try {
+            for ($i = 0; $i < $retries; $i++) {
+                usleep(isset($backoffs[$i]) ? $backoffs[$i] : 150000);
+                try {
+                    $this->reconnect();            // fresh socket, short timeout, re-negotiates
+                    return $this->call($method, $params);
+                } catch (ElectrumException $e) {
+                    if ($e->getCode() !== 1) {
+                        throw $e;                  // server answered with an error: stop -> 503
+                    }
+                    $last = $e;                    // still transient: try again
+                }
+            }
+        } finally {
+            $this->timeout = $fullTimeout;         // restore normal posture for later calls
+            if (is_resource($this->sock)) {
+                @stream_set_timeout($this->sock, $fullTimeout);
+            }
+        }
+        throw $last;                               // exhausted retries -> caller -> 503
     }
 
     /**
